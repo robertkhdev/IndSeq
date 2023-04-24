@@ -1,11 +1,21 @@
 import numpy as np
+import pandas as pd
+import json
 import time
-from collections import namedtuple
+from collections import Counter, namedtuple
+import functools
+import operator
 
-"""
-TODO
 
-"""
+State = namedtuple('State',
+                   ['Tests',
+                    'Launched',
+                    'First',
+                    'Period',
+                    'PeriodValue',
+                    'EV',
+                    'JointProb',
+                    'Action'])
 
 
 # state update
@@ -20,7 +30,12 @@ def f(x, a, u):
     launched_first = x[2]
     t_per = x[3]
     probs = x[4]
+    test_costs = x[5]
+    ind_values = x[6]
+    pricing_mults = x[7]
+    r = x[8]
     test, launch = a
+    K = len(test_results)
 
     if launched_first is None and launch is not None:
         launched_first = launch
@@ -28,19 +43,23 @@ def f(x, a, u):
     if launched_first is not None:
         can_launch = [x if x is not None else 0 for x in test_results]
         launched = np.array([x if x is not None else 0 for x in launched])
-        unlaunched = (can_launch - launched) * np.arange(1, K+1)
-        launched += unlaunched
+        launched_clean = np.array([x if x is not None else 0 for x in launched])
+        launched_01 = np.array([min(x, 1) for x in launched_clean])
+        unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
+        launched = launched_01 + unlaunched
+        launched = [int(launch) for launch in launched]
 
     if test is not None:
         test_results[test] = u[test]
 
     t_per += 1
 
-    return (test_results, launched, launched_first, t_per, probs)
+    return (test_results, launched, launched_first, t_per, probs, test_costs,
+            ind_values, pricing_mults, r)
 
 
 # payoff function
-def g(x, a, test_cost):
+def g(x, a):
     """
     x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None)
     a: action = tuple (test index or None to stop, launch index or None)
@@ -52,11 +71,15 @@ def g(x, a, test_cost):
     launched = np.array(x[1])
     launched_first = x[2]
     t_per = x[3]
+    test_costs = x[5]
+    ind_values = x[6]
+    pricing_mults = x[7]
     test, launch = a
+    K = len(test_results)
 
     # test cost
     if test is not None:
-        payoff -= test_cost[a[0]]
+        payoff -= test_costs[a[0]]
     # launch value for first indication launched
     if launched_first is None and launch is not None:
         launched_first = launch
@@ -65,10 +88,16 @@ def g(x, a, test_cost):
     # launch value for subsequent indications
     if launched_first is not None:
         can_launch = np.array([x if x is not None else 0 for x in test_results])
-        launched = np.array([x if x is not None else 0 for x in launched])
-        unlaunched = (can_launch - launched) * np.arange(1, K+1)
+        launched_clean = np.array([x if x is not None else 0 for x in launched])
+        launched_01 = np.array([min(x, 1) for x in launched_clean])
+
+        if min(launched_01) < 0:
+            print('stop')
+
+        unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
         unlaunched_index = [x - 1 for x in unlaunched if x > 0]
         for i in unlaunched_index:
+            #print(i, launched_first, unlaunched_index, unlaunched, launched, can_launch)
             payoff += ind_values[i] * pricing_mults[launched_first]
 
     return payoff
@@ -106,77 +135,178 @@ def format_state(x, str_end=''):
     launched = np.array(x[1])
     launched_first = x[2]
     t_per = x[3]
-    ret_str = ('T=' + ''.join([str(i) if i is not None else '-' for i in test_results]) +
+    ret_str = ('T=' + ''.join([str(i) if i is not None else '_' for i in test_results]) +
                ' | L=' + ''.join('1' if i == 1 else '0' for i in launched) +
-               ' | F=' + str(launched_first if launched_first is not None else '-') +
+               ' | F=' + str(launched_first if launched_first is not None else '_') +
                ' | Per=' + str(t_per) + ' |' +
                str_end)
 
     return ret_str
 
 
+def print_diagnostic(diagnostic_on, x, t_per, value_in_period, ev, prob, prob_str):
+    if diagnostic_on:
+        str_end = 'CF=' + str(round(value_in_period, 3)) + '| ' + prob_str + '=' + str(
+            round(prob, 3)) + ' | ' + 'EV=' + str(
+            round(ev, 3))
+        print('\t' * (t_per * 2 + 1), format_state(x, str_end))
+
+
+def success_prob(x_s, x_f):
+    ps_numerator = calc_marginal(x_s)
+    ps_denominator = ps_numerator + calc_marginal(x_f)
+    ps = ps_numerator / ps_denominator
+    return ps
+
+
+def vf_test(x, a):
+    k = a[0]
+    t_per = x[3]
+    r = x[8]
+    n_tests = len(x[0])
+    success = [0] * n_tests
+    success[k] = 1
+    failure = [0] * n_tests
+    failure[k] = 0
+
+    value_in_period = g(x, a)
+
+    x_s = f(x, a, success)
+    x_f = f(x, a, failure)
+    ps = success_prob(x_s, x_f)
+
+    success_dict = vf(x_s)
+    success_value = success_dict['value'].EV
+    success_state = State(Tests=tuple(x_s[0]),
+                          Launched=tuple(x_s[1]),
+                          First=x_s[2],
+                          Period=t_per,
+                          PeriodValue=value_in_period,
+                          EV=success_value,
+                          JointProb=1,
+                          Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+    # print_diagnostic(diagnostic, x, t_per, value_in_period, success_value, ps, 'P_S')
+
+    failure_dict = vf(x_f)
+    failure_value = failure_dict['value'].EV
+    failure_state = State(Tests=tuple(x_f[0]),
+                          Launched=tuple(x_f[1]),
+                          First=x_f[2],
+                          Period=t_per,
+                          PeriodValue=value_in_period,
+                          EV=failure_value,
+                          JointProb=1,
+                          Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+    # print_diagnostic(diagnostic, x, t_per, value_in_period, failure_value, 1 - ps, 'P_F')
+
+    value = value_in_period + r * (ps * success_value + (1 - ps) * failure_value)
+    current_state = State(Tests=tuple(x[0]),
+                          Launched=tuple(x[1]),
+                          First=x[2],
+                          Period=t_per,
+                          PeriodValue=value_in_period,
+                          EV=value,
+                          JointProb=1,
+                          Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+
+    node_dict = {'value': current_state,
+                 'children': [{'value': success_state, 'children': success_dict['children']},
+                              {'value': failure_state, 'children': failure_dict['children']}]}
+
+    return node_dict
+
+
+def vf_launch_without_test(x, a):
+    t_per = x[3]
+    value_in_period = g(x, a)
+    value = value_in_period
+    launch_state = State(Tests=tuple(x[0]),
+                         Launched=tuple(x[1]),
+                         First=x[2],
+                         Period=t_per,
+                         PeriodValue=g(x, a),
+                         EV=value,
+                         JointProb=1,
+                         Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+    node_dict = {'value': launch_state, 'children': []}
+    return node_dict
+
+
+def vf_stop(x, a):
+    t_per = x[3]
+    value_in_period = g(x, a)
+    value = value_in_period
+    stop_state = State(Tests=tuple(x[0]),
+                       Launched=tuple(x[1]),
+                       First=x[2],
+                       Period=t_per,
+                       PeriodValue=g(x, a),
+                       EV=value,
+                       JointProb=0,
+                       Action={'Test': None, 'Launch': None, 'Index': None})
+    node_dict = {'value': stop_state,
+                 'children': []}
+    return node_dict
+
+
 # value function
 def vf(x):
-
     t_per = x[3]
-    probs = x[4]
-    Node = namedtuple('Node', ['Tests', 'Launched', 'First', 'Period'])
-
     action_set = actions(x)
     action_values = []
-    for a in action_set:
-        if a[0] is not None:
-            k = a[0]
-            success = [0] * K
-            success[k] = 1
-            failure = [0] * K
-            failure[k] = 0
-            value_in_period = g(x, a, test_costs)
+    action_list = []
 
-            action_string = 'Test ' + str(k)
-            if a[1] is not None:
-                action_string += 'Launch ' + str(a[1])
+    if len(action_set) > 0:
+        # there are one or more actions
+        for a in action_set:
+            if a[0] is not None:
+                # do a test
+                node_dict = vf_test(x, a)
+                action_values.append(node_dict['value'].EV)
+                action_list.append(node_dict)
+                # if diagnostic:
+                #     print('\t' * (t_per * 2), format_state(x), round(value, 3))
+            else:
+                # case of no test but launch something
+                # if no more testing, then we are at an end node in the tree
+                if a[1] is not None:
+                    node_dict = vf_launch_without_test(x, a)
+                else:
+                    # no test or launch, so this is an endpoint where we stop
+                    node_dict = vf_stop(x, a)
+                # if diagnostic:
+                #     print('\t' * (t_per * 2), format_state(x), round(value_in_period, 3), '**END**')
+                action_values.append(node_dict['value'].EV)
+                action_list.append(node_dict)
 
-            x_s = f(x, a, success)
-            x_f = f(x, a, failure)
-            ps_numerator = calc_marginal(x_s)
-            ps_denominator = ps_numerator + calc_marginal(x_f)
-            ps = ps_numerator / ps_denominator
-            success_value = value_in_period + r * vf(x_s)
-            str_end = 'CF=' + str(value_in_period) + '|' + ' P_S=' + str(round(ps, 3)) + ' | ' + 'EV=' + str(round(success_value, 3))
-            print('\t' * (t_per * 2 + 1), format_state(x, str_end))
-
-            failure_value = value_in_period + r * vf(x_f)
-            str_end = 'CF=' + str(value_in_period) + '|' + ' P_F=' + str(round(1 - ps, 3)) + ' | ' + 'EV=' + str(round(failure_value, 3))
-            print('\t' * (t_per * 2 + 1), format_state(x, str_end))
-
-            value = ps * success_value + (1 - ps) * failure_value
-            print('\t' * (t_per * 2), format_state(x), round(value, 3), '{' + action_string + '}')
-        else:
-            # case of no test but launch something
-            value = g(x, a, test_costs)
-            print('\t' * (t_per * 2), format_state(x), round(value, 3))
-        action_values.append(value)
-        # else:
-        #     value = g(x, a=(None, None), test_cost=test_costs)
-        #     action_values.append(value)
-        #     print('\t' * (t_per * 2), round(value, 6))
-        #     print('\t' * (t_per * 2), format_state(x), round(value, 6))
-        #     print('XXXXXXXXXXXXXXXXX')
+            ret_val = max(action_values)
+            choice_idx = action_values.index(ret_val)
+            value_in_period = action_list[choice_idx]['value'].EV
+            action = {'Test': None, 'Launch': None, 'Index': choice_idx}
+            node_dict = {'value': State(Tests=tuple(x[0]),
+                                        Launched=tuple(x[1]),
+                                        First=x[2],
+                                        Period=t_per,
+                                        PeriodValue=value_in_period,
+                                        EV=ret_val,
+                                        JointProb=0,
+                                        Action=action),
+                         'children': action_list}
 
     if len(action_values) == 0:
-        ret_val = 0
-        action_string = 'Do Nothing'
-    else:
-        ret_val = max(action_values)
-        action_index = action_values.index(ret_val)
-        action_string = 'Test ' + str(action_set[action_index][0]) + ' Launch ' + str(action_set[action_index][1])
+        # no test or launch
+        action = {'Test': None, 'Launch': None, 'Index': None}
+        node_dict = {'value': State(Tests=tuple(x[0]),
+                                    Launched=tuple(x[1]),
+                                    First=x[2],
+                                    Period=t_per,
+                                    PeriodValue=0,
+                                    EV=0,
+                                    JointProb=0,
+                                    Action=action),
+                     'children': []}
 
-    tree[Node(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per)] = action_string
-
-    # print('\t' * (t_per * 2), round(ret_val, 6))
-    # print('\t' * (t_per * 2), format_state(x), round(ret_val, 6))
-    return ret_val
+    return node_dict
 
 
 def calc_marginal(x):
@@ -197,40 +327,319 @@ def calc_marginal(x):
     return new_probs
 
 
-if __name__ == '__main__':
+def run_tests(diagnostic=False):
     np.random.seed(1234)
     K = 3  # indications
-    r = 1 / (1 + 0.0)  # discount factor
-
-    # test_costs = np.random.random(K) / 10
-    # ind_values = np.random.random(K)
-    # pricing_mults = np.append(np.array([1]), np.random.random(K - 1))
-    joint_probs = np.random.dirichlet(np.ones(2**K)).reshape(*([2]*K))
-    # np.split(np.random.dirichlet(np.ones(2 ** 2)), 2)
-
-    test_costs = np.array([0.1] * K)
-    ind_values = np.array([1.0] * K)
-    pricing_mults = np.array([1.0] + [0.9] * K)
-    pricing_mults = np.array([1.0] * K)
-
+    r = 1 / (1 + 0.1)  # discount factor
     test_results = [None] * K
     # test_results = [1, None, None]
     launched = [None] * K
     launched_first = None
     t_per = 0
     # t_per = 1
-    x = (test_results, launched, launched_first, t_per, joint_probs)
-    tree = dict()
 
-    State = namedtuple('State', ['Tests', 'Launched', 'First', 'Period', 'PeriodValue', 'EV', 'JointProb', 'Parent', 'Children'])
+    test_cases = pd.read_csv('TestCases.csv', index_col=0)
 
+    failures = 0
+    times = []
+    total_tic = time.perf_counter()
+    for index, row in test_cases.iterrows():
+        if index >= 1:
+            excel_value = row['Value']
+            joint_probs = np.array([[[row['abc'], row['abC']],
+                                     [row['aBc'], row['aBC']]],
+                                    [[row['Abc'], row['AbC']],
+                                     [row['ABc'], row['ABC']]]])
+            ind_values = np.array([row['vA_A'], row['vB_A'], row['vC_A']])
+            pricing_mults = np.array([1, row['B_mult'], row['C_mult']])
+            test_costs = np.array([0.1] * K)
+            x = (test_results,
+                 launched,
+                 launched_first,
+                 t_per,
+                 joint_probs,
+                 test_costs,
+                 ind_values,
+                 pricing_mults,
+                 r)
+
+            tic = time.perf_counter()
+            tree = vf(x)
+            toc = time.perf_counter()
+            times.append(toc - tic)
+            excel_value = round(excel_value, 5)
+            val = round(tree['value'].EV, 5)
+            if excel_value != val:
+                failures += 1
+                print(index, excel_value == val, excel_value, val)
+            if diagnostic:
+                pass
+                # print(json.dumps(tree))
+
+    total_toc = time.perf_counter()
+
+    print('\n', failures, 'failures out of', str(len(test_cases)))
+    print('Avg. Time = ', np.mean(times))
+    print('Total Time = ', total_toc - total_tic)
+    # for t in tree.items():
+    #     print(t)
+    #
+    # print('Joint Probabilities of Test Success')
+    # print(joint_probs)
+    # print('Value: ', val, '   Seconds:', str(toc - tic))
+
+
+def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
+    np.random.seed(1234)
+    r = 1 / (1 + 0.1)  # discount factor
+
+    failures = 0
+    times = []
+    values = []
+    samples = []
+    step_count_monitor = 0
     tic = time.perf_counter()
-    val = vf(x)
-    toc = time.perf_counter()
-    for t in tree.items():
-        print(t)
+    for index in range(n_samples):
+        test_results = [None] * K
+        launched = [None] * K
+        launched_first = None
+        t_per = 0
+        joint_probs = np.random.dirichlet(np.ones(2 ** K)).reshape(*([2] * K))
+        test_costs = np.random.random(K) / 10
+        ind_values = np.random.random(K)
+        pricing_mults = np.append(np.array([1]), np.random.random(K - 1))
+        x = (test_results,
+             launched,
+             launched_first,
+             t_per,
+             joint_probs,
+             test_costs,
+             ind_values,
+             pricing_mults,
+             r)
 
-    print('Joint Probabilities of Test Success')
-    print(joint_probs)
-    print('Value: ', val, '   Seconds:', str(toc - tic))
+        tree_tic = time.perf_counter()
+        tree = vf(x)
+        tree_toc = time.perf_counter()
+        times.append(tree_toc - tree_tic)
+        values.append(tree['value'].EV)
+        samples.append(tree)
+        if diagnostic:
+            print(json.dumps(tree))
+        # print(json.dumps(tree, indent=4))
 
+        step_count_monitor += 1
+        if step_count_monitor == 1_000:
+            toc = time.perf_counter()
+            print('{0:0.0%}'.format(round(index / n_samples, 2)), round(toc - tic, 0), 'seconds')
+            step_count_monitor = 0
+            tic = time.perf_counter()
+
+    print('Avg. Time = ', np.mean(times))
+    print('Avg. EV = ', np.mean(values))
+    print('St. Dev. EV = ', np.std(values))
+
+    # with open('tree.json', 'w') as f:
+    #     f.write(json.dumps(tree, indent=4))
+
+    if return_tree:
+        return tree
+    else:
+        return samples
+
+
+def make_policy(tree):
+    node = tree['value']
+    children = tree['children']
+    action = node.Action
+    test = action['Test']
+    launch = action['Launch']
+    launched = node.Launched
+    tested = node.Tests
+    first_launch = node.First
+    index = action['Index']
+    period = node.Period
+
+    state = {'Tested': tested,
+             'Launched': launched,
+             'FirstLaunch': first_launch,
+             'Period': period}
+
+    # decision node
+    if index is not None:
+        # the node state is duplicated at decisions
+        node = children[node.Action['Index']]['value']
+        action = node.Action
+        period = node.Period
+        # index = action['Index']
+        state = {'Tested': tested,
+                 'Launched': launched,
+                 'FirstLaunch': first_launch,
+                 'Period': period}
+        if index is not None:
+            children = children[index]['children']
+            children = [make_policy(c) for c in children]
+            return {'state': state, 'action': node.Action, 'children': children}
+        else:
+            children = []
+        return {'state': state, 'action': action, 'children': children}
+
+    # end node
+    return {'state': state, 'action': None, 'children': []}
+
+
+def compactify_state(state):
+    state_string = ''.join(str(s) for s in state)
+    return state_string.replace('None', '_')
+
+
+def make_compact_policy(tree):
+    node = tree['value']
+    children = tree['children']
+    action = node.Action
+    launched = node.Launched
+    tested = node.Tests
+    first_launch = node.First
+    index = action['Index']
+    # decision node
+    if index is not None:
+        # the node state is duplicated at decisions
+        node = children[node.Action['Index']]['value']
+        action = node.Action
+        tested = compactify_state(tested)
+        launched = compactify_state(launched)
+        first_launch = '_' if first_launch is None else str(first_launch)
+        act_test = '_' if action['Test'] is None else str(action['Test'])
+        act_launch = '_' if action['Launch'] is None else str(action['Launch'])
+        state = tested + ';' + launched + ';' + first_launch
+        if index is not None:
+            children = children[index]['children']
+            children = [make_compact_policy(c['value']) for c in children]
+            return {'state': state, 'action': act_test + ';' + act_launch, 'children': children}
+        else:
+            children = []
+        return {'state': state, 'action': act_test + ';' + act_launch, 'children': children}
+
+    # end node
+    launched = node.Launched
+    tested = node.Tests
+    first_launch = node.First
+    tested = compactify_state(tested)
+    launched = compactify_state(launched)
+    first_launch = '_' if first_launch is None else first_launch
+    state = tested + ';' + launched + ';' + first_launch
+    return {'state': state, 'action': '_;_', 'children': []}
+
+
+def extract_decision_rules(policy):
+    rule = ''.join(policy['state']) + ':' + policy['action']
+    children = policy['children']
+    if len(children) > 0:
+        child_decisions = [extract_decision_rules(c) for c in children]
+        if any(type(cd) == list for cd in child_decisions):
+            flat_list = [cd for sublist in child_decisions for cd in sublist if type(sublist) == list]
+        else:
+            flat_list = child_decisions
+        as_list = [rule] + flat_list
+        return as_list
+    return rule
+
+
+def make_policy_all_data(tree):
+    """
+    Make policy tree and include all node data (e.g., EV, probabilities, etc.)
+    :param tree:
+    :return:
+    """
+    node = tree['value']
+    children = tree['children']
+    action = node.Action
+    # test = action['Test']
+    # launch = action['Launch']
+    index = action['Index']
+    # action_str = ''
+    # if test is not None:
+    #     action_str += 'Test ' + str(test) + ' '
+    # if launch is not None:
+    #     action_str += 'Launch ' + str(launch)
+    # decision node
+    if index is not None:
+        # the node state is duplicated at decisions
+        node = children[node.Action['Index']]['value']
+        action = node.Action
+        # index = action['Index']
+        if index is not None:
+            children = children[index]['children']
+            children = [make_policy(c['value']) for c in children]
+            return {'state': node, 'action': node.Action, 'children': children}
+        else:
+            children = []
+        return {'state': node, 'action': action, 'children': children}
+
+    # end node
+    return {'state': node, 'action': None, 'children': []}
+
+
+def print_policy(policy):
+    """
+    output policy tree to console
+    """
+    node = policy
+    action = node['action']
+    if action is not None and len(action) > 0:
+        test = action['Test']
+        launch = action['Launch']
+        action_str = ''
+        if test is not None:
+            action_str += 'Test ' + str(test) + ' '
+        if launch is not None:
+            action_str += 'Launch ' + str(launch)
+        print('\t'*policy['state']['Period'],
+              'T:' + ''.join([str(t if t is not None else '_') for t in node['state']['Tested']]),
+              'L:' + ''.join([str(l if l is not None else '_') for l in node['state']['Launched']]),
+              'P:' + str(node['state']['Period']), end=' ')
+        if len(action_str) > 0:
+            print('\t\t\tAct:', action_str)
+        else:
+            print('\n', end=' ')
+    if len(policy['children']) == 0:
+        return
+    for c in policy['children']:
+        # print('\t'*policy['state'].Period, end='')
+        print_policy(c)
+
+
+if __name__ == '__main__':
+    diagnostic = False
+    # diagnostic = True
+
+    run_tests()
+
+    # diagnostic = True
+    # tree = run_rand(3, diagnostic, return_tree=True)
+    # policy = make_policy(tree)
+    # print_policy(policy)
+
+    # for i in range(2, 6):
+    #     print(i)
+    #     run_rand(i, False)
+
+
+    n_samples = 1_000_000
+    samples = run_rand(3, n_samples, diagnostic=False, return_tree=False)
+    policies = [make_compact_policy(s) for s in samples]
+    rule_lists = [extract_decision_rules(p) for p in policies]
+
+    rule_sets = [frozenset(r) for r in rule_lists]
+    policy_strs = [str(p) for p in policies]
+
+    counts = Counter(rule_sets)
+    counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
+    counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
+    counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
+    counts_df.to_excel('indseq' + str(n_samples) + '.xlsx')
+
+    counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
+    counts_df.sort_values('samples_opt', ascending=False)\
+        .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
+    counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
