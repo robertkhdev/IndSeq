@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import time
 from collections import Counter, namedtuple
+from typing import List, Dict, Union, Tuple, Iterator, Callable, Optional
 import functools
 import operator
 
@@ -159,7 +160,7 @@ def success_prob(x_s, x_f):
     return ps
 
 
-def vf_test(x, a):
+def vf_test(x, a) -> Dict:
     k = a[0]
     t_per = x[3]
     r = x[8]
@@ -177,41 +178,27 @@ def vf_test(x, a):
 
     success_dict = vf(x_s)
     success_value = success_dict['value'].EV
-    success_state = State(Tests=tuple(x_s[0]),
-                          Launched=tuple(x_s[1]),
-                          First=x_s[2],
-                          Period=t_per,
-                          PeriodValue=value_in_period,
-                          EV=success_value,
-                          JointProb=1,
-                          Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+    # success_state = State(Tests=tuple(x_s[0]), Launched=tuple(x_s[1]), First=x_s[2], Period=t_per,
+    #                       PeriodValue=value_in_period, EV=success_value, JointProb=1,
+    #                       Action={'Test': a[0], 'Launch': a[1], 'Index': None})
     # print_diagnostic(diagnostic, x, t_per, value_in_period, success_value, ps, 'P_S')
 
     failure_dict = vf(x_f)
     failure_value = failure_dict['value'].EV
-    failure_state = State(Tests=tuple(x_f[0]),
-                          Launched=tuple(x_f[1]),
-                          First=x_f[2],
-                          Period=t_per,
-                          PeriodValue=value_in_period,
-                          EV=failure_value,
-                          JointProb=1,
-                          Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+    # failure_state = State(Tests=tuple(x_f[0]), Launched=tuple(x_f[1]), First=x_f[2], Period=t_per,
+    #                       PeriodValue=value_in_period, EV=failure_value, JointProb=1,
+    #                       Action={'Test': a[0], 'Launch': a[1], 'Index': None})
     # print_diagnostic(diagnostic, x, t_per, value_in_period, failure_value, 1 - ps, 'P_F')
 
     value = value_in_period + r * (ps * success_value + (1 - ps) * failure_value)
-    current_state = State(Tests=tuple(x[0]),
-                          Launched=tuple(x[1]),
-                          First=x[2],
-                          Period=t_per,
-                          PeriodValue=value_in_period,
-                          EV=value,
-                          JointProb=1,
+    current_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                          PeriodValue=value_in_period, EV=value, JointProb=1,
                           Action={'Test': a[0], 'Launch': a[1], 'Index': None})
 
-    node_dict = {'value': current_state,
-                 'children': [{'value': success_state, 'children': success_dict['children']},
-                              {'value': failure_state, 'children': failure_dict['children']}]}
+    node_dict = {'value': current_state, 'children': [success_dict, failure_dict]}
+    # node_dict = {'value': current_state,
+    #              'children': [{'value': success_state, 'children': success_dict['children']},
+    #                           {'value': failure_state, 'children': failure_dict['children']}]}
 
     return node_dict
 
@@ -220,29 +207,19 @@ def vf_launch_without_test(x, a):
     t_per = x[3]
     value_in_period = g(x, a)
     value = value_in_period
-    launch_state = State(Tests=tuple(x[0]),
-                         Launched=tuple(x[1]),
-                         First=x[2],
-                         Period=t_per,
-                         PeriodValue=g(x, a),
-                         EV=value,
-                         JointProb=1,
+    launch_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                         PeriodValue=g(x, a), EV=value, JointProb=1,
                          Action={'Test': a[0], 'Launch': a[1], 'Index': None})
     node_dict = {'value': launch_state, 'children': []}
     return node_dict
 
 
-def vf_stop(x, a):
+def vf_stop(x, a) -> Dict:
     t_per = x[3]
     value_in_period = g(x, a)
     value = value_in_period
-    stop_state = State(Tests=tuple(x[0]),
-                       Launched=tuple(x[1]),
-                       First=x[2],
-                       Period=t_per,
-                       PeriodValue=g(x, a),
-                       EV=value,
-                       JointProb=0,
+    stop_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                       PeriodValue=g(x, a), EV=value, JointProb=0,
                        Action={'Test': None, 'Launch': None, 'Index': None})
     node_dict = {'value': stop_state,
                  'children': []}
@@ -250,11 +227,12 @@ def vf_stop(x, a):
 
 
 # value function
-def vf(x):
+def vf(x) -> Dict:
     t_per = x[3]
     action_set = actions(x)
     action_values = []
     action_list = []
+    node_dict = dict()
 
     if len(action_set) > 0:
         # there are one or more actions
@@ -262,48 +240,28 @@ def vf(x):
             if a[0] is not None:
                 # do a test
                 node_dict = vf_test(x, a)
-                action_values.append(node_dict['value'].EV)
-                action_list.append(node_dict)
-                # if diagnostic:
-                #     print('\t' * (t_per * 2), format_state(x), round(value, 3))
+            elif a[1] is not None:
+                # case of no test but launch something -> at end node in tree
+                node_dict = vf_launch_without_test(x, a)
             else:
-                # case of no test but launch something
-                # if no more testing, then we are at an end node in the tree
-                if a[1] is not None:
-                    node_dict = vf_launch_without_test(x, a)
-                else:
-                    # no test or launch, so this is an endpoint where we stop
-                    node_dict = vf_stop(x, a)
-                # if diagnostic:
-                #     print('\t' * (t_per * 2), format_state(x), round(value_in_period, 3), '**END**')
-                action_values.append(node_dict['value'].EV)
-                action_list.append(node_dict)
+                # no test or launch, so this is an endpoint where we stop
+                node_dict = vf_stop(x, a)
+            action_values.append(node_dict['value'].EV)
+            action_list.append(node_dict)
 
-            ret_val = max(action_values)
-            choice_idx = action_values.index(ret_val)
-            value_in_period = action_list[choice_idx]['value'].EV
-            action = {'Test': None, 'Launch': None, 'Index': choice_idx}
-            node_dict = {'value': State(Tests=tuple(x[0]),
-                                        Launched=tuple(x[1]),
-                                        First=x[2],
-                                        Period=t_per,
-                                        PeriodValue=value_in_period,
-                                        EV=ret_val,
-                                        JointProb=0,
-                                        Action=action),
-                         'children': action_list}
+        ret_val = max(action_values)
+        choice_idx = action_values.index(ret_val)
+        value_in_period = action_list[choice_idx]['value'].EV
+        action = {'Test': None, 'Launch': None, 'Index': choice_idx}
+        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                                    PeriodValue=value_in_period, EV=ret_val, JointProb=0, Action=action),
+                     'children': action_list}
 
     if len(action_values) == 0:
-        # no test or launch
+        # uncertainty node
         action = {'Test': None, 'Launch': None, 'Index': None}
-        node_dict = {'value': State(Tests=tuple(x[0]),
-                                    Launched=tuple(x[1]),
-                                    First=x[2],
-                                    Period=t_per,
-                                    PeriodValue=0,
-                                    EV=0,
-                                    JointProb=0,
-                                    Action=action),
+        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                                    PeriodValue=0, EV=0, JointProb=0, Action=action),
                      'children': []}
 
     return node_dict
@@ -404,10 +362,14 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
         launched = [None] * K
         launched_first = None
         t_per = 0
+
         joint_probs = np.random.dirichlet(np.ones(2 ** K)).reshape(*([2] * K))
-        test_costs = np.random.random(K) / 10
-        ind_values = np.random.random(K)
+        # test_costs = np.random.random(K) / 10
+        test_costs = np.ones(K) * 0.1
+        # ind_values = np.random.random(K)
+        ind_values = np.append(np.array([1]), np.random.random(K - 1))
         pricing_mults = np.append(np.array([1]), np.random.random(K - 1))
+
         x = (test_results,
              launched,
              launched_first,
@@ -501,40 +463,40 @@ def make_compact_policy(tree):
     tested = node.Tests
     first_launch = node.First
     index = action['Index']
-    # decision node
-    if index is not None:
-        # the node state is duplicated at decisions
-        node = children[node.Action['Index']]['value']
-        action = node.Action
+
+    tested = compactify_state(tested)
+    launched = compactify_state(launched)
+    first_launch = '_' if first_launch is None else str(first_launch)
+    state = tested + ';' + launched + ';' + first_launch
+    if index is not None: # decision node
+        # children = children[index]['children']
+        # children = [make_compact_policy(c) for c in children]
+        act_test = children[index]['value'].Action['Test']
+        act_test_str = '_' if act_test is None else str(act_test)
+        act_launch_str = '_' if action['Launch'] is None else str(action['Launch'])
+        choice = make_compact_policy(children[index])
+        return {'state': state, 'action': act_test_str + ';' + act_launch_str, 'children': [choice]}
+    elif len(children) > 1: # probability node
+        children = [make_compact_policy(c) for c in children]
+        return {'state': state, 'action': '_;_', 'children': children}
+    else: # end node
+        launched = node.Launched
+        tested = node.Tests
+        first_launch = node.First
         tested = compactify_state(tested)
         launched = compactify_state(launched)
         first_launch = '_' if first_launch is None else str(first_launch)
-        act_test = '_' if action['Test'] is None else str(action['Test'])
-        act_launch = '_' if action['Launch'] is None else str(action['Launch'])
         state = tested + ';' + launched + ';' + first_launch
-        if index is not None:
-            children = children[index]['children']
-            children = [make_compact_policy(c['value']) for c in children]
-            return {'state': state, 'action': act_test + ';' + act_launch, 'children': children}
-        else:
-            children = []
-        return {'state': state, 'action': act_test + ';' + act_launch, 'children': children}
-
-    # end node
-    launched = node.Launched
-    tested = node.Tests
-    first_launch = node.First
-    tested = compactify_state(tested)
-    launched = compactify_state(launched)
-    first_launch = '_' if first_launch is None else first_launch
-    state = tested + ';' + launched + ';' + first_launch
-    return {'state': state, 'action': '_;_', 'children': []}
+        return {'state': state, 'action': '_;_', 'children': []}
 
 
 def extract_decision_rules(policy):
     rule = ''.join(policy['state']) + ':' + policy['action']
     children = policy['children']
-    if len(children) > 0:
+    if len(children) == 1 and policy['action'] != '_;_':
+        # go one level down
+        # in the policy, decision nodes have 1 branch for the selected alternative
+        children = policy['children'][0]['children']
         child_decisions = [extract_decision_rules(c) for c in children]
         if any(type(cd) == list for cd in child_decisions):
             flat_list = [cd for sublist in child_decisions for cd in sublist if type(sublist) == list]
@@ -542,7 +504,7 @@ def extract_decision_rules(policy):
             flat_list = child_decisions
         as_list = [rule] + flat_list
         return as_list
-    return rule
+    return [rule]
 
 
 def make_policy_all_data(tree):
@@ -624,22 +586,52 @@ if __name__ == '__main__':
     #     print(i)
     #     run_rand(i, False)
 
-
-    n_samples = 1_000_000
-    samples = run_rand(3, n_samples, diagnostic=False, return_tree=False)
+    K = 3
+    n_samples = 100_000
+    samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
     policies = [make_compact_policy(s) for s in samples]
+    # policy_strs = [str(p) for p in policies]
     rule_lists = [extract_decision_rules(p) for p in policies]
-
+    [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
     rule_sets = [frozenset(r) for r in rule_lists]
-    policy_strs = [str(p) for p in policies]
 
     counts = Counter(rule_sets)
     counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
     counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
     counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
-    counts_df.to_excel('indseq' + str(n_samples) + '.xlsx')
+    counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
 
     counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
     counts_df.sort_values('samples_opt', ascending=False)\
         .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
     counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
+
+    # extract_decision_rules(make_compact_policy(samples[3]))
+
+
+    # K = 2
+    # r = 1 / (1 + 0.1)
+    # test_results = [None] * K
+    # launched = [None] * K
+    # launched_first = None
+    # t_per = 0
+    #
+    # joint_probs = np.array([[0.07, 0.13],[0.03, 0.77]])
+    # test_costs = np.ones(K) * 0.1
+    # ind_values = np.array([0.95, 0.1])
+    # pricing_mults = np.array([1.0, 0.5])
+    #
+    # x = (test_results,
+    #      launched,
+    #      launched_first,
+    #      t_per,
+    #      joint_probs,
+    #      test_costs,
+    #      ind_values,
+    #      pricing_mults,
+    #      r)
+    #
+    # tree = vf(x)
+    # policy = make_compact_policy(tree)
+    # rule_list = extract_decision_rules(policy)
+    #
