@@ -3,9 +3,16 @@ import pandas as pd
 import json
 import time
 from collections import Counter, namedtuple
+# from multiprocessing import Pool
+from pathos.multiprocessing import ProcessPool as Pool
 from typing import List, Dict, Union, Tuple, Iterator, Callable, Optional
 import functools
 import operator
+from numba import jit, vectorize
+
+import randmodels
+
+# TODO convert lists to tuples wherever possible
 
 
 State = namedtuple('State',
@@ -60,6 +67,7 @@ def f(x, a, u):
 
 
 # payoff function
+# @functools.cache
 def g(x, a):
     """
     x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None)
@@ -71,7 +79,6 @@ def g(x, a):
     test_results = np.array(x[0])
     launched = np.array(x[1])
     launched_first = x[2]
-    t_per = x[3]
     test_costs = x[5]
     ind_values = x[6]
     pricing_mults = x[7]
@@ -98,7 +105,6 @@ def g(x, a):
         unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
         unlaunched_index = [x - 1 for x in unlaunched if x > 0]
         for i in unlaunched_index:
-            #print(i, launched_first, unlaunched_index, unlaunched, launched, can_launch)
             payoff += ind_values[i] * pricing_mults[launched_first]
 
     return payoff
@@ -221,8 +227,7 @@ def vf_stop(x, a) -> Dict:
     stop_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
                        PeriodValue=g(x, a), EV=value, JointProb=0,
                        Action={'Test': None, 'Launch': None, 'Index': None})
-    node_dict = {'value': stop_state,
-                 'children': []}
+    node_dict = {'value': stop_state, 'children': []}
     return node_dict
 
 
@@ -347,6 +352,81 @@ def run_tests(diagnostic=False):
     # print('Value: ', val, '   Seconds:', str(toc - tic))
 
 
+def vf2(x) -> Dict:
+    t_per = x[3]
+    action_set = actions(x)
+    action_values = []
+    action_list = []
+    node_dict = dict()
+
+    if len(action_set) > 0:
+        # there are one or more actions
+        for a in action_set:
+            if a[0] is not None:
+                # do a test
+                k = a[0]
+                t_per = x[3]
+                r = x[8]
+                n_tests = len(x[0])
+                success = [0] * n_tests
+                success[k] = 1
+                failure = [0] * n_tests
+                failure[k] = 0
+
+                value_in_period = g(x, a)
+                x_s = f(x, a, success)
+                x_f = f(x, a, failure)
+                ps = success_prob(x_s, x_f)
+                success_dict = vf(x_s)
+                success_value = success_dict['value'].EV
+                failure_dict = vf(x_f)
+                failure_value = failure_dict['value'].EV
+
+                value = value_in_period + r * (ps * success_value + (1 - ps) * failure_value)
+                current_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                                      PeriodValue=value_in_period, EV=value, JointProb=1,
+                                      Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+
+                node_dict = {'value': current_state, 'children': [success_dict, failure_dict]}
+            elif a[1] is not None:
+                # case of no test but launch something -> at end node in tree
+                t_per = x[3]
+                value_in_period = g(x, a)
+                value = value_in_period
+                launch_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                                     PeriodValue=g(x, a), EV=value, JointProb=1,
+                                     Action={'Test': a[0], 'Launch': a[1], 'Index': None})
+                node_dict = {'value': launch_state, 'children': []}
+            else:
+                # no test or launch, so this is an endpoint where we stop
+                t_per = x[3]
+                value_in_period = g(x, a)
+                value = value_in_period
+                stop_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                                   PeriodValue=g(x, a), EV=value, JointProb=0,
+                                   Action={'Test': None, 'Launch': None, 'Index': None})
+                node_dict = {'value': stop_state, 'children': []}
+            action_values.append(node_dict['value'].EV)
+            action_list.append(node_dict)
+
+        ret_val = max(action_values)
+        choice_idx = action_values.index(ret_val)
+        value_in_period = action_list[choice_idx]['value'].EV
+        action = {'Test': None, 'Launch': None, 'Index': choice_idx}
+        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                                    PeriodValue=value_in_period, EV=ret_val, JointProb=0, Action=action),
+                     'children': action_list}
+
+    if len(action_values) == 0:
+        # uncertainty node
+        action = {'Test': None, 'Launch': None, 'Index': None}
+        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
+                                    PeriodValue=0, EV=0, JointProb=0, Action=action),
+                     'children': []}
+
+    return node_dict
+
+
 def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
     np.random.seed(1234)
     r = 1 / (1 + 0.1)  # discount factor
@@ -358,14 +438,15 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
     step_count_monitor = 0
     tic = time.perf_counter()
     for index in range(n_samples):
-        test_results = [None] * K
-        launched = [None] * K
+        test_results = tuple([None] * K)
+        launched = tuple([None] * K)
         launched_first = None
         t_per = 0
 
         joint_probs = np.random.dirichlet(np.ones(2 ** K)).reshape(*([2] * K))
-        # test_costs = np.random.random(K) / 10
-        test_costs = np.ones(K) * 0.1
+        test_costs = np.random.random(K) * 0.2  # varying this multipleir results in very different numbers of policies
+                                                # for the same number of samples taken.
+        # test_costs = np.ones(K) * 0.1
         # ind_values = np.random.random(K)
         ind_values = np.append(np.array([1]), np.random.random(K - 1))
         pricing_mults = np.append(np.array([1]), np.random.random(K - 1))
@@ -390,12 +471,12 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
             print(json.dumps(tree))
         # print(json.dumps(tree, indent=4))
 
-        step_count_monitor += 1
-        if step_count_monitor == 1_000:
-            toc = time.perf_counter()
-            print('{0:0.0%}'.format(round(index / n_samples, 2)), round(toc - tic, 0), 'seconds')
-            step_count_monitor = 0
-            tic = time.perf_counter()
+        # step_count_monitor += 1
+        # if step_count_monitor == 1_000:
+        #     toc = time.perf_counter()
+        #     print('{0:0.0%}'.format(round(index / n_samples, 2)), round(toc - tic, 0), 'seconds')
+        #     step_count_monitor = 0
+        #     tic = time.perf_counter()
 
     print('Avg. Time = ', np.mean(times))
     print('Avg. EV = ', np.mean(values))
@@ -408,6 +489,41 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
         return tree
     else:
         return samples
+
+
+def run_one(x):
+    ...
+
+
+def run_rand_parallel(K=3, n=1000):
+    r = 1 / (1 + 0.1)  # discount factor
+    test_results = [None] * K
+    launched = [None] * K
+    launched_first = None
+    t_per = 0
+    input_samples = randmodels.generate_samples(K, n)
+    x_list = []
+
+    for input_sample in input_samples:
+        joint_probs = input_sample['joint_probs']
+        test_costs = input_sample['test_costs']
+        ind_values = input_sample['ind_values']
+        pricing_mults = input_sample['pricing_mults']
+        x = (test_results,
+             launched,
+             launched_first,
+             t_per,
+             joint_probs,
+             test_costs,
+             ind_values,
+             pricing_mults,
+             r)
+        x_list.append(x)
+
+    with Pool(nodes=20) as p:
+        results = p.map(vf, x_list)
+
+    return results
 
 
 def make_policy(tree):
@@ -575,7 +691,7 @@ if __name__ == '__main__':
     diagnostic = False
     # diagnostic = True
 
-    run_tests()
+    # run_tests()
 
     # diagnostic = True
     # tree = run_rand(3, diagnostic, return_tree=True)
@@ -586,28 +702,102 @@ if __name__ == '__main__':
     #     print(i)
     #     run_rand(i, False)
 
-    K = 3
-    n_samples = 100_000
-    samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
-    policies = [make_compact_policy(s) for s in samples]
-    # policy_strs = [str(p) for p in policies]
-    rule_lists = [extract_decision_rules(p) for p in policies]
-    [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
-    rule_sets = [frozenset(r) for r in rule_lists]
+    # tic = time.perf_counter()
+    # K = 4
+    # n_samples = 1_000
+    # samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
+    # policies = [make_compact_policy(s) for s in samples]
+    # # policy_strs = [str(p) for p in policies]
+    # rule_lists = [extract_decision_rules(p) for p in policies]
+    # [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
+    # rule_sets = [frozenset(r) for r in rule_lists]
+    #
+    # counts = Counter(rule_sets)
+    # counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
+    # counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
+    # counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
+    # counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
+    #
+    # counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
+    # counts_df.sort_values('samples_opt', ascending=False)\
+    #     .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
+    # counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
+    # toc = time.perf_counter()
+    # print(toc - tic)
 
-    counts = Counter(rule_sets)
-    counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
-    counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
-    counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
-    counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
+    def run_trial(K, n_samples):
+        samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
+        policies = [make_compact_policy(s) for s in samples]
+        # policy_strs = [str(p) for p in policies]
+        rule_lists = [extract_decision_rules(p) for p in policies]
+        [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
+        rule_sets = [frozenset(r) for r in rule_lists]
 
-    counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
-    counts_df.sort_values('samples_opt', ascending=False)\
-        .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
-    counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
+        counts = Counter(rule_sets)
+        counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
+        counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
+        counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
+        counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
+
+
+    for K in [2, 3, 4]:
+        for n in [1_000, 10_000, 100_000]:
+            print('K =', str(K), ' | n =', str(n))
+            tic = time.perf_counter()
+            run_trial(K, n)
+            toc = time.perf_counter()
+            print(toc - tic, 'seconds\n')
 
     # extract_decision_rules(make_compact_policy(samples[3]))
 
+    # K = 3
+    # n = 1_000
+    # tic = time.perf_counter()
+    # r = 1 / (1 + 0.1)  # discount factor
+    # test_results = [None] * K
+    # launched = [None] * K
+    # launched_first = None
+    # t_per = 0
+    # input_samples = randmodels.generate_samples(K, n)
+    # x_list = []
+    #
+    # for input_sample in input_samples:
+    #     joint_probs = input_sample['joint_probs']
+    #     test_costs = input_sample['test_costs']
+    #     ind_values = input_sample['ind_values']
+    #     pricing_mults = input_sample['pricing_mults']
+    #     x = (test_results,
+    #          launched,
+    #          launched_first,
+    #          t_per,
+    #          joint_probs,
+    #          test_costs,
+    #          ind_values,
+    #          pricing_mults,
+    #          r)
+    #     x_list.append(x)
+    #
+    # with Pool(nodes=15) as p:
+    #     samples = p.imap(vf, x_list)
+    # toc = time.perf_counter()
+    # print(toc - tic)
+    #
+    # policies = [make_compact_policy(s) for s in samples]
+    # # policy_strs = [str(p) for p in policies]
+    # rule_lists = [extract_decision_rules(p) for p in policies]
+    # [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
+    # rule_sets = [frozenset(r) for r in rule_lists]
+    #
+    # counts = Counter(rule_sets)
+    # counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
+    # counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
+    # counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
+    # counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n) + '.xlsx')
+    #
+    # counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
+    # counts_df.sort_values('samples_opt', ascending=False)\
+    #     .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
+    # counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
 
     # K = 2
     # r = 1 / (1 + 0.1)
