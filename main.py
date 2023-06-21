@@ -3,138 +3,14 @@ import pandas as pd
 import json
 import time
 from collections import Counter, namedtuple
-# from multiprocessing import Pool
-from pathos.multiprocessing import ProcessPool as Pool
+from multiprocessing import Pool
+# from pathos.multiprocessing import ProcessPool as Pool
 from typing import List, Dict, Union, Tuple, Iterator, Callable, Optional
-import functools
 import operator
 from numba import jit, vectorize
 
 import randmodels
-
-# TODO convert lists to tuples wherever possible
-
-
-State = namedtuple('State',
-                   ['Tests',
-                    'Launched',
-                    'First',
-                    'Period',
-                    'PeriodValue',
-                    'EV',
-                    'JointProb',
-                    'Action'])
-
-
-# state update
-def f(x, a, u):
-    """
-    x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None, time period)
-    a: action = tuple (test index or None to stop, launch index or None)
-    u: test outcome = 1 for success, 0 for failure
-    """
-    test_results = np.array(x[0])
-    launched = np.array(x[1])
-    launched_first = x[2]
-    t_per = x[3]
-    probs = x[4]
-    test_costs = x[5]
-    ind_values = x[6]
-    pricing_mults = x[7]
-    r = x[8]
-    test, launch = a
-    K = len(test_results)
-
-    if launched_first is None and launch is not None:
-        launched_first = launch
-        launched[launch] = 1
-    if launched_first is not None:
-        can_launch = [x if x is not None else 0 for x in test_results]
-        launched = np.array([x if x is not None else 0 for x in launched])
-        launched_clean = np.array([x if x is not None else 0 for x in launched])
-        launched_01 = np.array([min(x, 1) for x in launched_clean])
-        unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
-        launched = launched_01 + unlaunched
-        launched = [int(launch) for launch in launched]
-
-    if test is not None:
-        test_results[test] = u[test]
-
-    t_per += 1
-
-    return (test_results, launched, launched_first, t_per, probs, test_costs,
-            ind_values, pricing_mults, r)
-
-
-# payoff function
-# @functools.cache
-def g(x, a):
-    """
-    x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None)
-    a: action = tuple (test index or None to stop, launch index or None)
-    test_cost: test cost data
-    """
-
-    payoff = 0
-    test_results = np.array(x[0])
-    launched = np.array(x[1])
-    launched_first = x[2]
-    test_costs = x[5]
-    ind_values = x[6]
-    pricing_mults = x[7]
-    test, launch = a
-    K = len(test_results)
-
-    # test cost
-    if test is not None:
-        payoff -= test_costs[a[0]]
-    # launch value for first indication launched
-    if launched_first is None and launch is not None:
-        launched_first = launch
-        launched[launch] = 1
-        payoff += ind_values[launched_first] * pricing_mults[launched_first]
-    # launch value for subsequent indications
-    if launched_first is not None:
-        can_launch = np.array([x if x is not None else 0 for x in test_results])
-        launched_clean = np.array([x if x is not None else 0 for x in launched])
-        launched_01 = np.array([min(x, 1) for x in launched_clean])
-
-        if min(launched_01) < 0:
-            print('stop')
-
-        unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
-        unlaunched_index = [x - 1 for x in unlaunched if x > 0]
-        for i in unlaunched_index:
-            payoff += ind_values[i] * pricing_mults[launched_first]
-
-    return payoff
-
-
-# action space
-def actions(x):
-    test_results = np.array(x[0])
-    launched = np.array(x[1])
-    launched_first = x[2]
-    t_per = x[3]
-    no_tests = False
-
-    # what can still be tested
-    tests = [i for i, v in enumerate(test_results) if v is None]
-    if len(tests) == 0:
-        no_tests = True
-    tests.append(None)
-
-    # what can be launched first, if none launched yet
-    if launched_first is None:
-        launches = [(i, v) for i, v in enumerate(test_results)]
-        launches = [i for i, v in launches if v == 1]
-        if not no_tests:
-            launches.append(None)
-    else:
-        launches = [None]
-
-    action_list = [(t, l) for t in tests for l in launches]
-    return action_list
+from indseqtree import *
 
 
 def format_state(x, str_end=''):
@@ -159,137 +35,6 @@ def print_diagnostic(diagnostic_on, x, t_per, value_in_period, ev, prob, prob_st
         print('\t' * (t_per * 2 + 1), format_state(x, str_end))
 
 
-def success_prob(x_s, x_f):
-    ps_numerator = calc_marginal(x_s)
-    ps_denominator = ps_numerator + calc_marginal(x_f)
-    ps = ps_numerator / ps_denominator
-    return ps
-
-
-def vf_test(x, a) -> Dict:
-    k = a[0]
-    t_per = x[3]
-    r = x[8]
-    n_tests = len(x[0])
-    success = [0] * n_tests
-    success[k] = 1
-    failure = [0] * n_tests
-    failure[k] = 0
-
-    value_in_period = g(x, a)
-
-    x_s = f(x, a, success)
-    x_f = f(x, a, failure)
-    ps = success_prob(x_s, x_f)
-
-    success_dict = vf(x_s)
-    success_value = success_dict['value'].EV
-    # success_state = State(Tests=tuple(x_s[0]), Launched=tuple(x_s[1]), First=x_s[2], Period=t_per,
-    #                       PeriodValue=value_in_period, EV=success_value, JointProb=1,
-    #                       Action={'Test': a[0], 'Launch': a[1], 'Index': None})
-    # print_diagnostic(diagnostic, x, t_per, value_in_period, success_value, ps, 'P_S')
-
-    failure_dict = vf(x_f)
-    failure_value = failure_dict['value'].EV
-    # failure_state = State(Tests=tuple(x_f[0]), Launched=tuple(x_f[1]), First=x_f[2], Period=t_per,
-    #                       PeriodValue=value_in_period, EV=failure_value, JointProb=1,
-    #                       Action={'Test': a[0], 'Launch': a[1], 'Index': None})
-    # print_diagnostic(diagnostic, x, t_per, value_in_period, failure_value, 1 - ps, 'P_F')
-
-    value = value_in_period + r * (ps * success_value + (1 - ps) * failure_value)
-    current_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                          PeriodValue=value_in_period, EV=value, JointProb=1,
-                          Action={'Test': a[0], 'Launch': a[1], 'Index': None})
-
-    node_dict = {'value': current_state, 'children': [success_dict, failure_dict]}
-    # node_dict = {'value': current_state,
-    #              'children': [{'value': success_state, 'children': success_dict['children']},
-    #                           {'value': failure_state, 'children': failure_dict['children']}]}
-
-    return node_dict
-
-
-def vf_launch_without_test(x, a):
-    t_per = x[3]
-    value_in_period = g(x, a)
-    value = value_in_period
-    launch_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                         PeriodValue=g(x, a), EV=value, JointProb=1,
-                         Action={'Test': a[0], 'Launch': a[1], 'Index': None})
-    node_dict = {'value': launch_state, 'children': []}
-    return node_dict
-
-
-def vf_stop(x, a) -> Dict:
-    t_per = x[3]
-    value_in_period = g(x, a)
-    value = value_in_period
-    stop_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                       PeriodValue=g(x, a), EV=value, JointProb=0,
-                       Action={'Test': None, 'Launch': None, 'Index': None})
-    node_dict = {'value': stop_state, 'children': []}
-    return node_dict
-
-
-# value function
-def vf(x) -> Dict:
-    t_per = x[3]
-    action_set = actions(x)
-    action_values = []
-    action_list = []
-    node_dict = dict()
-
-    if len(action_set) > 0:
-        # there are one or more actions
-        for a in action_set:
-            if a[0] is not None:
-                # do a test
-                node_dict = vf_test(x, a)
-            elif a[1] is not None:
-                # case of no test but launch something -> at end node in tree
-                node_dict = vf_launch_without_test(x, a)
-            else:
-                # no test or launch, so this is an endpoint where we stop
-                node_dict = vf_stop(x, a)
-            action_values.append(node_dict['value'].EV)
-            action_list.append(node_dict)
-
-        ret_val = max(action_values)
-        choice_idx = action_values.index(ret_val)
-        value_in_period = action_list[choice_idx]['value'].EV
-        action = {'Test': None, 'Launch': None, 'Index': choice_idx}
-        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                                    PeriodValue=value_in_period, EV=ret_val, JointProb=0, Action=action),
-                     'children': action_list}
-
-    if len(action_values) == 0:
-        # uncertainty node
-        action = {'Test': None, 'Launch': None, 'Index': None}
-        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                                    PeriodValue=0, EV=0, JointProb=0, Action=action),
-                     'children': []}
-
-    return node_dict
-
-
-def calc_marginal(x):
-    test_results = np.array(x[0])
-    launched = np.array(x[1])
-    launched_first = x[2]
-    t_per = x[3]
-    probs = x[4]
-    dims = len(test_results.shape)
-
-    for v in test_results:
-        if v is not None:
-            probs = probs[v]
-        else:
-            probs = np.sum(probs, axis=0)
-
-    new_probs = np.sum(probs)
-    return new_probs
-
-
 def run_tests(diagnostic=False):
     np.random.seed(1234)
     K = 3  # indications
@@ -300,6 +45,7 @@ def run_tests(diagnostic=False):
     launched_first = None
     t_per = 0
     # t_per = 1
+    launch_period = None
 
     test_cases = pd.read_csv('TestCases.csv', index_col=0)
 
@@ -324,10 +70,11 @@ def run_tests(diagnostic=False):
                  test_costs,
                  ind_values,
                  pricing_mults,
-                 r)
+                 r,
+                 launch_period)
 
             tic = time.perf_counter()
-            tree = vf(x)
+            tree = vf(pickle.dumps(x))
             toc = time.perf_counter()
             times.append(toc - tic)
             excel_value = round(excel_value, 5)
@@ -441,6 +188,7 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
         test_results = tuple([None] * K)
         launched = tuple([None] * K)
         launched_first = None
+        launch_period = None
         t_per = 0
 
         joint_probs = np.random.dirichlet(np.ones(2 ** K)).reshape(*([2] * K))
@@ -459,10 +207,11 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
              test_costs,
              ind_values,
              pricing_mults,
-             r)
+             r,
+             launch_period)
 
         tree_tic = time.perf_counter()
-        tree = vf(x)
+        tree = vf(pickle.dumps(x))
         tree_toc = time.perf_counter()
         times.append(tree_toc - tree_tic)
         values.append(tree['value'].EV)
@@ -578,31 +327,30 @@ def make_compact_policy(tree):
     launched = node.Launched
     tested = node.Tests
     first_launch = node.First
+    t_per = node.Period
     index = action['Index']
 
     tested = compactify_state(tested)
     launched = compactify_state(launched)
     first_launch = '_' if first_launch is None else str(first_launch)
-    state = tested + ';' + launched + ';' + first_launch
-    if index is not None: # decision node
-        # children = children[index]['children']
-        # children = [make_compact_policy(c) for c in children]
+    state = str(t_per) + ';' + tested + ';' + launched + ';' + first_launch
+    if index is not None:  # decision node
         act_test = children[index]['value'].Action['Test']
         act_test_str = '_' if act_test is None else str(act_test)
         act_launch_str = '_' if action['Launch'] is None else str(action['Launch'])
         choice = make_compact_policy(children[index])
         return {'state': state, 'action': act_test_str + ';' + act_launch_str, 'children': [choice]}
-    elif len(children) > 1: # probability node
+    elif len(children) > 1:  # probability node
         children = [make_compact_policy(c) for c in children]
         return {'state': state, 'action': '_;_', 'children': children}
-    else: # end node
+    else:  # end node
         launched = node.Launched
         tested = node.Tests
         first_launch = node.First
         tested = compactify_state(tested)
         launched = compactify_state(launched)
         first_launch = '_' if first_launch is None else str(first_launch)
-        state = tested + ';' + launched + ';' + first_launch
+        state = str(t_per) + ';' + tested + ';' + launched + ';' + first_launch
         return {'state': state, 'action': '_;_', 'children': []}
 
 
@@ -702,51 +450,57 @@ if __name__ == '__main__':
     #     print(i)
     #     run_rand(i, False)
 
-    # tic = time.perf_counter()
-    # K = 4
-    # n_samples = 1_000
-    # samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
-    # policies = [make_compact_policy(s) for s in samples]
-    # # policy_strs = [str(p) for p in policies]
-    # rule_lists = [extract_decision_rules(p) for p in policies]
-    # [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
-    # rule_sets = [frozenset(r) for r in rule_lists]
+
+
+    tic = time.perf_counter()
+    K = 3
+    n_samples = 1_000
+    samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
+    policies = [make_compact_policy(s) for s in samples]
+    # policy_strs = [str(p) for p in policies]
+    rule_lists = [extract_decision_rules(p) for p in policies]
+    [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
+    rule_sets = [frozenset(r) for r in rule_lists]
+
+    counts = Counter(rule_sets)
+    counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
+    counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
+    counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
+    counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
+
+    counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
+    counts_df.sort_values('samples_opt', ascending=False)\
+        .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
+    counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
+    toc = time.perf_counter()
+    print(toc - tic)
+
+
+
+    # def run_trial(K, n_samples):
+    #     samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
+    #     policies = [make_compact_policy(s) for s in samples]
+    #     # policy_strs = [str(p) for p in policies]
+    #     rule_lists = [extract_decision_rules(p) for p in policies]
+    #     [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
+    #     rule_sets = [frozenset(r) for r in rule_lists]
     #
-    # counts = Counter(rule_sets)
-    # counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
-    # counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
-    # counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
-    # counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
+    #     counts = Counter(rule_sets)
+    #     counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
+    #     counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
+    #     counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
+    #     counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
     #
-    # counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
-    # counts_df.sort_values('samples_opt', ascending=False)\
-    #     .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
-    # counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
-    # toc = time.perf_counter()
-    # print(toc - tic)
-
-    def run_trial(K, n_samples):
-        samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
-        policies = [make_compact_policy(s) for s in samples]
-        # policy_strs = [str(p) for p in policies]
-        rule_lists = [extract_decision_rules(p) for p in policies]
-        [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
-        rule_sets = [frozenset(r) for r in rule_lists]
-
-        counts = Counter(rule_sets)
-        counts_df = pd.DataFrame(list(counts.items()), columns=['policy', 'samples_opt'])
-        counts_df = counts_df.sort_values('samples_opt', ascending=False).reset_index()
-        counts_df['Cumulative'] = counts_df['samples_opt'].cumsum()
-        counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
+    #
+    # for K in [2, 3, 4]:
+    #     for n in [1_000, 10_000, 100_000]:
+    #         print('K =', str(K), ' | n =', str(n))
+    #         tic = time.perf_counter()
+    #         run_trial(K, n)
+    #         toc = time.perf_counter()
+    #         print(toc - tic, 'seconds\n')
 
 
-    for K in [2, 3, 4]:
-        for n in [1_000, 10_000, 100_000]:
-            print('K =', str(K), ' | n =', str(n))
-            tic = time.perf_counter()
-            run_trial(K, n)
-            toc = time.perf_counter()
-            print(toc - tic, 'seconds\n')
 
     # extract_decision_rules(make_compact_policy(samples[3]))
 
