@@ -35,6 +35,13 @@ def print_diagnostic(diagnostic_on, x, t_per, value_in_period, ev, prob, prob_st
         print('\t' * (t_per * 2 + 1), format_state(x, str_end))
 
 
+def to_tuple(a):
+    try:
+        return tuple(to_tuple(i) for i in a)
+    except TypeError:
+        return a
+
+
 def run_tests(diagnostic=False):
     np.random.seed(1234)
     K = 3  # indications
@@ -73,8 +80,23 @@ def run_tests(diagnostic=False):
                  r,
                  launch_period)
 
+            x = State(Tests=tuple(test_results),
+                      Launched=tuple(launched),
+                      First=launched_first,
+                      Period=t_per,
+                      PeriodValue=0,
+                      EV=0,
+                      JointProb=to_tuple(joint_probs),
+                      Action=None,
+                      LaunchPer=launch_period,
+                      TestCost=tuple(test_costs),
+                      IndicationValues=tuple(ind_values),
+                      PricingMults=tuple(pricing_mults),
+                      DiscountRate=r)
+
             tic = time.perf_counter()
-            tree = vf(pickle.dumps(x))
+            # tree = vf(pickle.dumps(x))
+            tree = vf(x)
             toc = time.perf_counter()
             times.append(toc - tic)
             excel_value = round(excel_value, 5)
@@ -192,26 +214,41 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
         t_per = 0
 
         joint_probs = np.random.dirichlet(np.ones(2 ** K)).reshape(*([2] * K))
-        test_costs = np.random.random(K) * 0.2  # varying this multipleir results in very different numbers of policies
+        test_costs = np.random.random(K) * 0.1  # varying this multipleir results in very different numbers of policies
                                                 # for the same number of samples taken.
         # test_costs = np.ones(K) * 0.1
         # ind_values = np.random.random(K)
         ind_values = np.append(np.array([1]), np.random.random(K - 1))
         pricing_mults = np.append(np.array([1]), np.random.random(K - 1))
 
-        x = (test_results,
-             launched,
-             launched_first,
-             t_per,
-             joint_probs,
-             test_costs,
-             ind_values,
-             pricing_mults,
-             r,
-             launch_period)
+        # x = (test_results,
+        #      launched,
+        #      launched_first,
+        #      t_per,
+        #      joint_probs,
+        #      test_costs,
+        #      ind_values,
+        #      pricing_mults,
+        #      r,
+        #      launch_period)
+
+        x = State(Tests=test_results,
+                  Launched=launched,
+                  First=launched_first,
+                  Period=t_per,
+                  PeriodValue=0,
+                  EV=0,
+                  JointProb=to_tuple(joint_probs),
+                  Action=Action(Test=None, Launch=None, Index=None),
+                  LaunchPer=launch_period,
+                  TestCost=tuple(test_costs),
+                  IndicationValues=tuple(ind_values),
+                  PricingMults=tuple(pricing_mults),
+                  DiscountRate=r)
 
         tree_tic = time.perf_counter()
-        tree = vf(pickle.dumps(x))
+        # tree = vf(pickle.dumps(x))
+        tree = vf(x)
         tree_toc = time.perf_counter()
         times.append(tree_toc - tree_tic)
         values.append(tree['value'].EV)
@@ -279,12 +316,10 @@ def make_policy(tree):
     node = tree['value']
     children = tree['children']
     action = node.Action
-    test = action['Test']
-    launch = action['Launch']
     launched = node.Launched
     tested = node.Tests
     first_launch = node.First
-    index = action['Index']
+    index = tree['choice']
     period = node.Period
 
     state = {'Tested': tested,
@@ -295,7 +330,7 @@ def make_policy(tree):
     # decision node
     if index is not None:
         # the node state is duplicated at decisions
-        node = children[node.Action['Index']]['value']
+        node = children[index]['value']
         action = node.Action
         period = node.Period
         # index = action['Index']
@@ -312,7 +347,7 @@ def make_policy(tree):
         return {'state': state, 'action': action, 'children': children}
 
     # end node
-    return {'state': state, 'action': None, 'children': []}
+    return {'state': state, 'action': node.Action, 'children': []}
 
 
 def compactify_state(state):
@@ -323,26 +358,37 @@ def compactify_state(state):
 def make_compact_policy(tree):
     node = tree['value']
     children = tree['children']
-    action = node.Action
-    launched = node.Launched
-    tested = node.Tests
     first_launch = node.First
     t_per = node.Period
-    index = action['Index']
+    index = tree['choice']
 
-    tested = compactify_state(tested)
-    launched = compactify_state(launched)
+    tested = compactify_state(node.Tests)
+    launched = compactify_state(node.Launched)
     first_launch = '_' if first_launch is None else str(first_launch)
-    state = str(t_per) + ';' + tested + ';' + launched + ';' + first_launch
+    state = 'P' + str(t_per) + 'T' + tested + 'L' + launched + 'F' + first_launch
     if index is not None:  # decision node
-        act_test = children[index]['value'].Action['Test']
+        # the node state is duplicated at decisions
+        node = children[index]['value']
+        children = children[index]['children']
+        action = node.Action
+        period = node.Period
+        tested = compactify_state(node.Tests)
+        launched = compactify_state(node.Launched)
+        if node.First is None:
+            first_launch = '_'
+        else:
+            first_launch = node.First
+        state = 'P' + str(period) + 'T' + tested + 'L' + launched + 'F' + str(first_launch)
+
+        act_test = action.Test
         act_test_str = '_' if act_test is None else str(act_test)
-        act_launch_str = '_' if action['Launch'] is None else str(action['Launch'])
-        choice = make_compact_policy(children[index])
-        return {'state': state, 'action': act_test_str + ';' + act_launch_str, 'children': [choice]}
+        act_launch_str = '_' if action.Launch is None else str(action.Launch)
+
+        children = [make_compact_policy(c) for c in children]
+        return {'state': state, 'action': 'T' + act_test_str + 'L' + act_launch_str, 'children': children}
     elif len(children) > 1:  # probability node
         children = [make_compact_policy(c) for c in children]
-        return {'state': state, 'action': '_;_', 'children': children}
+        return {'state': state, 'action': 'T_L_', 'children': children}
     else:  # end node
         launched = node.Launched
         tested = node.Tests
@@ -350,17 +396,17 @@ def make_compact_policy(tree):
         tested = compactify_state(tested)
         launched = compactify_state(launched)
         first_launch = '_' if first_launch is None else str(first_launch)
-        state = str(t_per) + ';' + tested + ';' + launched + ';' + first_launch
-        return {'state': state, 'action': '_;_', 'children': []}
+        state = 'P' + str(t_per) + 'T' + tested + 'L' + launched + 'F' + first_launch
+        return {'state': state, 'action': 'T_L_', 'children': []}
 
 
 def extract_decision_rules(policy):
-    rule = ''.join(policy['state']) + ':' + policy['action']
+    rule = ''.join(str(policy['state'])) + ':' + str(policy['action'])
     children = policy['children']
-    if len(children) == 1 and policy['action'] != '_;_':
+    if len(children) >= 1:  # and policy['action'] != '_;_':
         # go one level down
         # in the policy, decision nodes have 1 branch for the selected alternative
-        children = policy['children'][0]['children']
+        children = policy['children']
         child_decisions = [extract_decision_rules(c) for c in children]
         if any(type(cd) == list for cd in child_decisions):
             flat_list = [cd for sublist in child_decisions for cd in sublist if type(sublist) == list]
@@ -454,9 +500,10 @@ if __name__ == '__main__':
 
     tic = time.perf_counter()
     K = 3
-    n_samples = 1_000
+    n_samples = 1
     samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
-    policies = [make_compact_policy(s) for s in samples]
+    compact_policies = [make_compact_policy(s) for s in samples]
+    policies = [make_policy(s) for s in samples]
     # policy_strs = [str(p) for p in policies]
     rule_lists = [extract_decision_rules(p) for p in policies]
     [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]

@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 import json
@@ -11,9 +10,10 @@ import dataclasses
 
 # TODO convert lists to tuples wherever possible
 
-PATENT_WINDOW = 20
+PATENT_WINDOW = 2000
 
 
+# TODO update all uses of "state" to use the State dataclass
 # TODO add type hints to State class
 @dataclasses.dataclass(frozen=True)
 class State:
@@ -26,64 +26,80 @@ class State:
     JointProb: any
     Action: any
     LaunchPer: any
+    TestCost: any
+    IndicationValues: any
+    PricingMults: any
+    DiscountRate: any
 
 
-# State = namedtuple('State',
-#                    ['Tests',
-#                     'Launched',
-#                     'First',
-#                     'Period',
-#                     'PeriodValue',
-#                     'EV',
-#                     'JointProb',
-#                     'Action',
-#                     'LaunchPer'])
+@dataclasses.dataclass(frozen=True)
+class Action:
+    Test: any
+    Launch: any
+    Index: any
 
 
 # state update
-def f(x, a, u):
+def f(x: State, a, u):
     """
     x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None, time period)
     a: action = tuple (test index or None to stop, launch index or None)
     u: test outcome = 1 for success, 0 for failure
     """
-    test_results = np.array(x[0])
-    launched = np.array(x[1])
-    launched_first = x[2]
-    t_per = x[3]
-    probs = x[4]
-    test_costs = x[5]
-    ind_values = x[6]
-    pricing_mults = x[7]
-    r = x[8]
-    launch_period = x[9]
-    test, launch = a
-    K = len(test_results)
-
+    test_results = x.Tests
+    launched = x.Launched
+    launched_first = x.First
+    t_per = x.Period
+    probs = x.JointProb
+    test_costs = x.TestCost
+    launch_period = x.LaunchPer
+    test = a.Test
+    launch = a.Launch
     if launched_first is None and launch is not None:
         launched_first = launch
-        launched[launch] = 1
+        launched = list(launched)
+        launched[launch] = t_per
+        launched = tuple(launched)
         launch_period = t_per
     if launched_first is not None:
-        can_launch = [x if x is not None else 0 for x in test_results]
-        launched = np.array([x if x is not None else 0 for x in launched])
-        launched_clean = np.array([x if x is not None else 0 for x in launched])
-        launched_01 = np.array([min(x, 1) for x in launched_clean])
-        unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
-        launched = launched_01 + unlaunched
-        launched = [int(launch) for launch in launched]
+        successes = np.array([tr if tr is not None else 0 for tr in test_results])
+        launched_prev = np.array([launch if launch is not None else 0 for launch in launched])
+        launched_01 = np.array([1 if launch is not None else 0 for launch in launched])
+        can_launch = successes - launched_01
+        launched_now = can_launch * t_per
+        launched = launched_prev + launched_now
+        launched = tuple([launch if launch != 0 else None for launch in launched])
 
     if test is not None:
+        test_results = list(test_results)
         test_results[test] = u[test]
+        test_results = tuple(test_results)
 
     t_per += 1
 
-    return (test_results, launched, launched_first, t_per, probs, test_costs,
-            ind_values, pricing_mults, r, launch_period)
+    value_in_period = g(x, a)
+    value = value_in_period + x.DiscountRate * x.EV
+    action = Action(Test=test, Launch=launch, Index=None)
+    new_x = State(Tests=test_results,
+                  Launched=launched,
+                  First=launched_first,
+                  Period=t_per,
+                  PeriodValue=value_in_period,
+                  EV=value,
+                  JointProb=probs,
+                  Action=action,
+                  LaunchPer=launch_period,
+                  TestCost=test_costs,
+                  IndicationValues=x.IndicationValues,
+                  PricingMults=x.PricingMults,
+                  DiscountRate=x.DiscountRate)
+
+    return new_x
 
 
+@functools.cache
 def patent_window_mod(t_per, launch_per, window_len, r):
-    time_left = max(0, launch_per+window_len-t_per)
+    time_left = max(0, launch_per + window_len - t_per)
     if time_left > 0:
         full_value = np.sum((1 + r) ** -np.array(range(window_len)))
         partial_value = np.sum((1 + r) ** -np.array(range(time_left)))
@@ -94,58 +110,62 @@ def patent_window_mod(t_per, launch_per, window_len, r):
 
 # payoff function
 @functools.cache
-def g(x, a):
+def g(x: State, a) -> float:
     """
     x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None)
     a: action = tuple (test index or None to stop, launch index or None)
     test_cost: test cost data
     """
 
-    x = pickle.loads(x)
     payoff = 0
-    test_results = np.array(x[0])
-    launched = np.array(x[1])
-    launched_first = x[2]
-    t_per = x[3]
-    test_costs = x[5]
-    ind_values = x[6]
-    pricing_mults = x[7]
-    r = x[8]
-    launch_period = x[9]
-    test, launch = a
+
+    test_results = x.Tests
+    launched = x.Launched
+    launched_first = x.First
+    t_per = x.Period
+    test_costs = x.TestCost
+    ind_values = x.IndicationValues
+    pricing_mults = x.PricingMults
+    r = x.DiscountRate
+    launch_period = x.LaunchPer
+
+    test = a.Test
+    launch = a.Launch
     K = len(test_results)
 
+    # TODO a lot of this is similar to code in f() - refactor?
     # test cost
     if test is not None:
-        payoff -= test_costs[a[0]]
+        payoff -= test_costs[a.Test]
     # launch value for first indication launched
     if launched_first is None and launch is not None:
         launched_first = launch
-        launched[launch] = 1
+        launched = list(launched)
+        launched[launch] = t_per
+        launched = tuple(launched)
         payoff += ind_values[launched_first] * pricing_mults[launched_first]
         launch_period = t_per
     # launch value for subsequent indications
     if launched_first is not None:
         can_launch = np.array([x if x is not None else 0 for x in test_results])
-        launched_clean = np.array([x if x is not None else 0 for x in launched])
-        launched_01 = np.array([min(x, 1) for x in launched_clean])
+        launched_01 = np.array([1 if x is not None else 0 for x in launched])
+        # launched_01 = np.array([min(x, 1) for x in launched_clean])
 
         unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
         unlaunched_index = [x - 1 for x in unlaunched if x > 0]
         for i in unlaunched_index:
-            payoff += ind_values[i] * pricing_mults[launched_first] * patent_window_mod(t_per, launch_period, PATENT_WINDOW, r)
+            payoff += ind_values[i] * pricing_mults[launched_first] * patent_window_mod(t_per, launch_period,
+                                                                                        PATENT_WINDOW, r)
 
     return payoff
 
 
 # action space
 @functools.cache
-def actions(x):
-    x = pickle.loads(x)
-    test_results = np.array(x[0])
-    launched = np.array(x[1])
-    launched_first = x[2]
-    t_per = x[3]
+def actions(x: State):
+    test_results = x.Tests
+    launched_first = x.First
+
     no_tests = False
 
     # what can still be tested
@@ -160,135 +180,26 @@ def actions(x):
         launches = [i for i, v in launches if v == 1]
         if not no_tests:
             launches.append(None)
+        else:
+            launches.append(None)
     else:
         launches = [None]
 
-    action_list = [(t, l) for t in tests for l in launches]
+    action_list = [Action(Test=t, Launch=l, Index=None) for t in tests for l in launches]
     return action_list
 
 
-def success_prob(x_s, x_f):
+def success_prob(x_s: State, x_f: State) -> float:
     ps_numerator = calc_marginal(x_s)
     ps_denominator = ps_numerator + calc_marginal(x_f)
     ps = ps_numerator / ps_denominator
     return ps
 
 
-@functools.cache
-def vf_test(x, a) -> Dict:
-    x = pickle.loads(x)
-    k = a[0]
-    t_per = x[3]
-    r = x[8]
-    n_tests = len(x[0])
-    success = [0] * n_tests
-    success[k] = 1
-    failure = [0] * n_tests
-    failure[k] = 0
+def calc_marginal(x: State):
+    test_results = x.Tests
+    probs = x.JointProb
 
-    value_in_period = g(pickle.dumps(x), a)
-
-    x_s = f(x, a, success)
-    x_f = f(x, a, failure)
-    ps = success_prob(x_s, x_f)
-
-    success_dict = vf(pickle.dumps(x_s))
-    success_value = success_dict['value'].EV
-
-    failure_dict = vf(pickle.dumps(x_f))
-    failure_value = failure_dict['value'].EV
-
-    value = value_in_period + r * (ps * success_value + (1 - ps) * failure_value)
-    current_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                          PeriodValue=value_in_period, EV=value, JointProb=1,
-                          Action={'Test': a[0], 'Launch': a[1], 'Index': None}, LaunchPer=x[9])
-
-    node_dict = {'value': current_state, 'children': [success_dict, failure_dict]}
-
-    return node_dict
-
-
-@functools.cache
-def vf_launch_without_test(x, a):
-    value_in_period = g(x, a)
-    value = value_in_period
-    x = pickle.loads(x)
-    t_per = x[3]
-    if x[9] is None:
-        launch_period = t_per
-    else:
-        launch_period = x[9]
-    launch_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                         PeriodValue=g(pickle.dumps(x), a), EV=value, JointProb=1,
-                         Action={'Test': a[0], 'Launch': a[1], 'Index': None}, LaunchPer=launch_period)
-    node_dict = {'value': launch_state, 'children': []}
-    return node_dict
-
-
-@functools.cache
-def vf_stop(x, a) -> Dict:
-    x = pickle.loads(x)
-    t_per = x[3]
-    value_in_period = g(pickle.dumps(x), a)
-    value = value_in_period
-    stop_state = State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                       PeriodValue=g(pickle.dumps(x), a), EV=value, JointProb=0,
-                       Action={'Test': None, 'Launch': None, 'Index': None},
-                       LaunchPer=None)
-    node_dict = {'value': stop_state, 'children': []}
-    return node_dict
-
-
-# value function
-@functools.cache
-def vf(x) -> Dict:
-
-    action_set = actions(x)
-    action_values = []
-    action_list = []
-    node_dict = dict()
-
-    if len(action_set) > 0:
-        # there are one or more actions
-        for a in action_set:
-            if a[0] is not None:
-                # do a test
-                node_dict = vf_test(x, a)
-            elif a[1] is not None:
-                # case of no test but launch something -> at end node in tree
-                node_dict = vf_launch_without_test(x, a)
-            else:
-                # no test or launch, so this is an endpoint where we stop
-                node_dict = vf_stop(x, a)
-            action_values.append(node_dict['value'].EV)
-            action_list.append(node_dict)
-
-        ret_val = max(action_values)
-        choice_idx = action_values.index(ret_val)
-        value_in_period = action_list[choice_idx]['value'].EV
-        launch_period = action_list[choice_idx]['value'].LaunchPer
-        action = {'Test': None, 'Launch': None, 'Index': choice_idx}
-        x = pickle.loads(x)
-        t_per = x[3]
-        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=t_per,
-                                    PeriodValue=value_in_period, EV=ret_val, JointProb=0, Action=action,
-                                    LaunchPer=launch_period),
-                     'children': action_list}
-
-    if len(action_values) == 0:
-        # uncertainty node
-        action = {'Test': None, 'Launch': None, 'Index': None}
-        x = pickle.loads(x)
-        node_dict = {'value': State(Tests=tuple(x[0]), Launched=tuple(x[1]), First=x[2], Period=x[3],
-                                    PeriodValue=0, EV=0, JointProb=0, Action=action, LaunchPer=x[9]),
-                     'children': []}
-
-    return node_dict
-
-
-def calc_marginal(x):
-    test_results = np.array(x[0])
-    probs = x[4]
     for v in test_results:
         if v is not None:
             probs = probs[v]
@@ -298,3 +209,102 @@ def calc_marginal(x):
     new_probs = np.sum(probs)
     return new_probs
 
+
+@functools.cache
+def vf_test(x: State, a) -> Dict:
+    k = a.Test
+    r = x.DiscountRate
+    n_tests = len(x.Tests)
+    success = [0] * n_tests
+    success[k] = 1
+    failure = [0] * n_tests
+    failure[k] = 0
+
+    value_in_period = g(x, a)
+
+    x_s = f(x, a, success)
+    x_f = f(x, a, failure)
+    ps = success_prob(x_s, x_f)
+
+    success_dict = vf(x_s)
+    success_value = success_dict['value'].EV
+
+    failure_dict = vf(x_f)
+    failure_value = failure_dict['value'].EV
+
+    value = value_in_period + r * (ps * success_value + (1 - ps) * failure_value)
+
+    new_x = State(Tests=x.Tests,
+                  Launched=x.Launched,
+                  First=x.First,
+                  Period=x.Period,
+                  PeriodValue=value_in_period,
+                  EV=value,
+                  JointProb=1,
+                  Action=a,
+                  LaunchPer=x.LaunchPer,
+                  TestCost=x.TestCost,
+                  IndicationValues=x.IndicationValues,
+                  PricingMults=x.PricingMults,
+                  DiscountRate=x.DiscountRate)
+
+    node_dict = {'value': new_x, 'children': [success_dict, failure_dict], 'choice': None}
+
+    return node_dict
+
+
+@functools.cache
+def vf_endpoint(x: State, a) -> Dict:
+    launch_state = f(x, a, x.Tests)
+    new_x = State(Tests=launch_state.Tests,
+                  Launched=launch_state.Launched,
+                  First=launch_state.First,
+                  Period=launch_state.Period,
+                  PeriodValue=launch_state.PeriodValue,
+                  EV=launch_state.PeriodValue,
+                  JointProb=launch_state.JointProb,
+                  Action=launch_state.Action,
+                  LaunchPer=launch_state.LaunchPer,
+                  TestCost=launch_state.TestCost,
+                  IndicationValues=launch_state.IndicationValues,
+                  PricingMults=launch_state.PricingMults,
+                  DiscountRate=launch_state.DiscountRate)
+    node_dict = {'value': new_x, 'children': [], 'choice': None}
+    return node_dict
+
+
+# value function
+@functools.cache
+def vf(x: State) -> Dict:
+    action_set = actions(x)
+    action_values = []
+    action_list = []
+
+    for a in action_set:
+        if a.Test is not None:
+            node_dict = vf_test(x, a)
+        else:
+            node_dict = vf_endpoint(x, a)
+        action_list.append(node_dict)
+        action_values.append(node_dict['value'].EV)
+
+    best_value = max(action_values)
+    choice = action_values.index(best_value)
+
+    new_x = State(Tests=x.Tests,
+                  Launched=x.Launched,
+                  First=x.First,
+                  Period=x.Period,
+                  PeriodValue=x.PeriodValue,
+                  EV=action_values[choice],
+                  JointProb=x.JointProb,
+                  Action=action_list[choice],
+                  LaunchPer=x.LaunchPer,
+                  TestCost=x.TestCost,
+                  IndicationValues=x.IndicationValues,
+                  PricingMults=x.PricingMults,
+                  DiscountRate=x.DiscountRate)
+
+    node_dict = {'value': new_x, 'children': action_list, 'choice': choice}
+
+    return node_dict
