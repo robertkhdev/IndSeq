@@ -356,48 +356,23 @@ def compactify_state(state):
 
 
 def make_compact_policy(tree):
-    node = tree['value']
     children = tree['children']
-    first_launch = node.First
-    t_per = node.Period
     index = tree['choice']
 
+    # the node state is duplicated at decisions
+    node = children[index]['value']
+    children = children[index]['children']
     tested = compactify_state(node.Tests)
     launched = compactify_state(node.Launched)
-    first_launch = '_' if first_launch is None else str(first_launch)
-    state = 'P' + str(t_per) + 'T' + tested + 'L' + launched + 'F' + first_launch
-    if index is not None:  # decision node
-        # the node state is duplicated at decisions
-        node = children[index]['value']
-        children = children[index]['children']
-        action = node.Action
-        period = node.Period
-        tested = compactify_state(node.Tests)
-        launched = compactify_state(node.Launched)
-        if node.First is None:
-            first_launch = '_'
-        else:
-            first_launch = node.First
-        state = 'P' + str(period) + 'T' + tested + 'L' + launched + 'F' + str(first_launch)
+    first_launch = '_' if node.First is None else str(node.First)
+    state = 'P' + str(node.Period) + 'T' + tested + 'L' + launched + 'F' + first_launch
 
-        act_test = action.Test
-        act_test_str = '_' if act_test is None else str(act_test)
-        act_launch_str = '_' if action.Launch is None else str(action.Launch)
+    act_test = node.Action.Test
+    act_test_str = '_' if act_test is None else str(act_test)
+    act_launch_str = '_' if node.Action.Launch is None else str(node.Action.Launch)
 
-        children = [make_compact_policy(c) for c in children]
-        return {'state': state, 'action': 'T' + act_test_str + 'L' + act_launch_str, 'children': children}
-    elif len(children) > 1:  # probability node
-        children = [make_compact_policy(c) for c in children]
-        return {'state': state, 'action': 'T_L_', 'children': children}
-    else:  # end node
-        launched = node.Launched
-        tested = node.Tests
-        first_launch = node.First
-        tested = compactify_state(tested)
-        launched = compactify_state(launched)
-        first_launch = '_' if first_launch is None else str(first_launch)
-        state = 'P' + str(t_per) + 'T' + tested + 'L' + launched + 'F' + first_launch
-        return {'state': state, 'action': 'T_L_', 'children': []}
+    children = [make_compact_policy(c) for c in children]
+    return {'state': state, 'action': 'T' + act_test_str + 'L' + act_launch_str, 'children': children}
 
 
 def extract_decision_rules(policy):
@@ -500,7 +475,7 @@ if __name__ == '__main__':
 
     tic = time.perf_counter()
     K = 3
-    n_samples = 1
+    n_samples = 1_000
     samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
     compact_policies = [make_compact_policy(s) for s in samples]
     policies = [make_policy(s) for s in samples]
