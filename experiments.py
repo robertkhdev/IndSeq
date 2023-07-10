@@ -1,15 +1,18 @@
+from collections import Counter
 from multiprocessing import Pool
+import json
+import pandas as pd
+import time
 
 import randmodels
 from indseqtree import *
 from utils import *
 
 
-def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
+def run_rand(K=3, n_samples=100, block_size=10_000, diagnostic=False, return_tree=False):
     np.random.seed(1234)
     r = 1 / (1 + 0.1)  # discount factor
 
-    failures = 0
     times = []
     values = []
     samples = []
@@ -45,18 +48,18 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
                   DiscountRate=r)
 
         tree_tic = time.perf_counter()
-        # tree = vf(pickle.dumps(x))
-        tree = vf(x)
+        tree = tree_start(x)
         tree_toc = time.perf_counter()
         times.append(tree_toc - tree_tic)
         values.append(tree['value'].EV)
         samples.append(tree)
         if diagnostic:
             print(json.dumps(tree))
-        # print(json.dumps(tree, indent=4))
 
-        # step_count_monitor += 1
-        # if step_count_monitor == 1_000:
+        step_count_monitor += 1
+        if step_count_monitor % block_size == 0:
+            pass
+        # if step_count_monitor == 10_000:
         #     toc = time.perf_counter()
         #     print('{0:0.0%}'.format(round(index / n_samples, 2)), round(toc - tic, 0), 'seconds')
         #     step_count_monitor = 0
@@ -65,9 +68,6 @@ def run_rand(K=3, n_samples=100, diagnostic=False, return_tree=False):
     print('Avg. Time = ', np.mean(times))
     print('Avg. EV = ', np.mean(values))
     print('St. Dev. EV = ', np.std(values))
-
-    # with open('tree.json', 'w') as f:
-    #     f.write(json.dumps(tree, indent=4))
 
     if return_tree:
         return tree
@@ -105,15 +105,16 @@ def run_rand_parallel(K=3, n=1000):
         x_list.append(x)
 
     with Pool(nodes=20) as p:
-        results = p.map(vf, x_list)
+        results = p.map(tree_start, x_list)
 
     return results
 
 
-def timing_test():
+def timing_test_instance(K: int, n_samples: int):
+    print('Running K =', str(K), ' n_samples =', n_samples)
     tic = time.perf_counter()
-    K = 3
-    n_samples = 1_000
+    # K = 3
+    # n_samples = 1_000
     samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
     compact_policies = [make_compact_policy(s) for s in samples]
     policies = [make_policy(s) for s in samples]
@@ -129,8 +130,39 @@ def timing_test():
     counts_df.to_excel('indseq_k' + str(K) + '_s' + str(n_samples) + '.xlsx')
 
     counts_df.plot.hist(y='samples_opt', bins=50, title='Num. policies optimal for given no. of samples.')
-    counts_df.sort_values('samples_opt', ascending=False)\
-        .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
-    counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
+    # counts_df.sort_values('samples_opt', ascending=False)\
+    #     .reset_index().plot.line(y='samples_opt', title='Policies ranked by # opt. policies (desc.).')
+    # counts_df.plot.line(y='Cumulative', title='Cumulative policies by # opt. samples.')
     toc = time.perf_counter()
-    print(toc - tic)
+    print('Unique optimal policies: ', len(counts_df))
+    print('Time (sec.): ', toc - tic)
+
+
+def timing_test():
+    ks = [2, 3, 4]
+    ns = [1_000, 10_000, 100_000, 1_000_000]
+    for k in [2, 3]:
+        for n in ns:
+            print('#'*100)
+            timing_test_instance(K=k, n_samples=n)
+
+
+def recycle_cache(fn):
+    print(fn.__name__, ' ' * (20 - len(fn.__name__)), fn.cache_info())
+    fn.cache_clear()
+
+
+def cache_test():
+    for k in [2, 3, 4]:
+        tic = time.perf_counter()
+        _ = run_rand(K=k, n_samples=100)
+        toc = time.perf_counter()
+        print('total seconds ', toc - tic)
+        recycle_cache(patent_window_mod)
+        recycle_cache(g)
+        recycle_cache(actions)
+        recycle_cache(success_prob)
+        # recycle_cache(calc_marginal)
+        # recycle_cache(vf_test)
+        # recycle_cache(vf_endpoint)
+        # recycle_cache(vf)

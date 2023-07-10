@@ -1,35 +1,31 @@
 import numpy as np
-
-import json
-import time
-from collections import Counter, namedtuple
 from typing import List, Dict, Union, Tuple, Iterator, Callable, Optional
 import functools
-import pickle
 import dataclasses
 
 # TODO convert lists to tuples wherever possible
 
 PATENT_WINDOW = 2000
+CACHE_MAXSIZE = None
 
 
 # TODO update all uses of "state" to use the State dataclass
 # TODO add type hints to State class
 @dataclasses.dataclass(frozen=True)
 class State:
-    Tests: any
-    Launched: any
-    First: any
-    Period: any
-    PeriodValue: any
-    EV: any
-    JointProb: any
-    Action: any
-    LaunchPer: any
-    TestCost: any
-    IndicationValues: any
-    PricingMults: any
-    DiscountRate: any
+    Tests: tuple = None
+    Launched: tuple = None
+    First: int | None = None
+    Period: int | None = None
+    PeriodValue: float | None = None
+    EV: float | None = None
+    JointProb: tuple = None
+    Action: Action = None
+    LaunchPer: tuple = None
+    TestCost: tuple = None
+    IndicationValues: tuple = None
+    PricingMults: tuple = None
+    DiscountRate: float = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -50,8 +46,6 @@ def f(x: State, a, u):
     launched = x.Launched
     launched_first = x.First
     t_per = x.Period
-    probs = x.JointProb
-    test_costs = x.TestCost
     launch_period = x.LaunchPer
     test = a.Test
     launch = a.Launch
@@ -80,24 +74,20 @@ def f(x: State, a, u):
     value_in_period = g(x, a)
     value = value_in_period + x.DiscountRate * x.EV
     action = Action(Test=test, Launch=launch, Index=None)
-    new_x = State(Tests=test_results,
-                  Launched=launched,
-                  First=launched_first,
-                  Period=t_per,
-                  PeriodValue=value_in_period,
-                  EV=value,
-                  JointProb=probs,
-                  Action=action,
-                  LaunchPer=launch_period,
-                  TestCost=test_costs,
-                  IndicationValues=x.IndicationValues,
-                  PricingMults=x.PricingMults,
-                  DiscountRate=x.DiscountRate)
+    new_x = dataclasses.replace(x,
+                                Tests=test_results,
+                                Launched=launched,
+                                First=launched_first,
+                                Period=t_per,
+                                PeriodValue=value_in_period,
+                                EV=value,
+                                Action=action,
+                                LaunchPer=launch_period)
 
     return new_x
 
 
-@functools.cache
+@functools.lru_cache(maxsize=CACHE_MAXSIZE)
 def patent_window_mod(t_per, launch_per, window_len, r):
     time_left = max(0, launch_per + window_len - t_per)
     if time_left > 0:
@@ -109,7 +99,7 @@ def patent_window_mod(t_per, launch_per, window_len, r):
 
 
 # payoff function
-@functools.cache
+@functools.lru_cache(maxsize=CACHE_MAXSIZE)
 def g(x: State, a) -> float:
     """
     x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None)
@@ -161,15 +151,15 @@ def g(x: State, a) -> float:
 
 
 # action space
-@functools.cache
-def actions(x: State):
-    test_results = x.Tests
-    launched_first = x.First
+@functools.lru_cache(maxsize=CACHE_MAXSIZE)
+def actions(test_results, launched_first):
+    # test_results = x.Tests
+    # launched_first = x.First
 
     no_tests = False
 
     # what can still be tested
-    tests = [i for i, v in enumerate(test_results) if v is None]
+    tests: List[Optional[int]] = [i for i, v in enumerate(test_results) if v is None]
     if len(tests) == 0:
         no_tests = True
     tests.append(None)
@@ -189,16 +179,18 @@ def actions(x: State):
     return action_list
 
 
-def success_prob(x_s: State, x_f: State) -> float:
-    ps_numerator = calc_marginal(x_s)
-    ps_denominator = ps_numerator + calc_marginal(x_f)
+@functools.lru_cache(maxsize=CACHE_MAXSIZE)
+def success_prob(s_test_results, s_probs, f_test_results, f_probs) -> float:
+    ps_numerator = calc_marginal(s_test_results, s_probs)
+    ps_denominator = ps_numerator + calc_marginal(f_test_results, f_probs)
     ps = ps_numerator / ps_denominator
     return ps
 
 
-def calc_marginal(x: State):
-    test_results = x.Tests
-    probs = x.JointProb
+@functools.lru_cache(maxsize=CACHE_MAXSIZE)
+def calc_marginal(test_results, probs):
+    # test_results = x.Tests
+    # probs = x.JointProb
 
     for v in test_results:
         if v is not None:
@@ -210,7 +202,7 @@ def calc_marginal(x: State):
     return new_probs
 
 
-@functools.cache
+# @functools.lru_cache(maxsize=CACHE_MAXSIZE)
 def vf_test(x: State, a) -> Dict:
     k = a.Test
     r = x.DiscountRate
@@ -224,7 +216,7 @@ def vf_test(x: State, a) -> Dict:
 
     x_s = f(x, a, success)
     x_f = f(x, a, failure)
-    ps = success_prob(x_s, x_f)
+    ps = success_prob(x_s.Tests, x_s.JointProb, x_f.Tests, x_f.JointProb)
 
     success_dict = vf(x_s)
     success_value = success_dict['value'].EV
@@ -233,50 +225,31 @@ def vf_test(x: State, a) -> Dict:
     failure_value = failure_dict['value'].EV
 
     value = value_in_period + r * (ps * success_value + (1 - ps) * failure_value)
-
-    new_x = State(Tests=x.Tests,
-                  Launched=x.Launched,
-                  First=x.First,
-                  Period=x.Period,
-                  PeriodValue=value_in_period,
-                  EV=value,
-                  JointProb=1,
-                  Action=a,
-                  LaunchPer=x.LaunchPer,
-                  TestCost=x.TestCost,
-                  IndicationValues=x.IndicationValues,
-                  PricingMults=x.PricingMults,
-                  DiscountRate=x.DiscountRate)
+    new_x = dataclasses.replace(x,
+                                PeriodValue=value_in_period,
+                                EV=value,
+                                Action=a)
 
     node_dict = {'value': new_x, 'children': [success_dict, failure_dict], 'choice': None}
 
     return node_dict
 
 
-@functools.cache
+# @functools.lru_cache(maxsize=CACHE_MAXSIZE)
 def vf_endpoint(x: State, a) -> Dict:
     launch_state = f(x, a, x.Tests)
-    new_x = State(Tests=launch_state.Tests,
-                  Launched=launch_state.Launched,
-                  First=launch_state.First,
-                  Period=launch_state.Period,
-                  PeriodValue=launch_state.PeriodValue,
-                  EV=launch_state.PeriodValue,
-                  JointProb=launch_state.JointProb,
-                  Action=launch_state.Action,
-                  LaunchPer=launch_state.LaunchPer,
-                  TestCost=launch_state.TestCost,
-                  IndicationValues=launch_state.IndicationValues,
-                  PricingMults=launch_state.PricingMults,
-                  DiscountRate=launch_state.DiscountRate)
-    node_dict = {'value': new_x, 'children': [], 'choice': None}
+    node_dict = {'value': launch_state, 'children': [], 'choice': None}
     return node_dict
 
 
 # value function
-@functools.cache
+# @functools.lru_cache(maxsize=CACHE_MAXSIZE)
 def vf(x: State) -> Dict:
-    action_set = actions(x)
+    """
+
+    :rtype: Dict
+    """
+    action_set = actions(x.Tests, x.First)
     action_values = []
     action_list = []
 
@@ -291,20 +264,25 @@ def vf(x: State) -> Dict:
     best_value = max(action_values)
     choice = action_values.index(best_value)
 
-    new_x = State(Tests=x.Tests,
-                  Launched=x.Launched,
-                  First=x.First,
-                  Period=x.Period,
-                  PeriodValue=x.PeriodValue,
-                  EV=action_values[choice],
-                  JointProb=x.JointProb,
-                  Action=action_list[choice],
-                  LaunchPer=x.LaunchPer,
-                  TestCost=x.TestCost,
-                  IndicationValues=x.IndicationValues,
-                  PricingMults=x.PricingMults,
-                  DiscountRate=x.DiscountRate)
+    new_x = dataclasses.replace(x, EV=action_values[choice],
+                                Action=action_list[choice])
 
     node_dict = {'value': new_x, 'children': action_list, 'choice': choice}
 
     return node_dict
+
+
+def tree_start(x: State) -> Dict:
+    """
+    Entry point for tree algorithm.
+    Ensures caches are clear before starting tree calculations.
+    :param x:
+    :return :
+    """
+    patent_window_mod.cache_clear()
+    g.cache_clear()
+    actions.cache_clear()
+    success_prob.cache_clear()
+    calc_marginal.cache_clear()
+
+    return vf(x)

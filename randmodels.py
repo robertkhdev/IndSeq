@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 from typing import List, Dict, Union, Tuple, Iterator, Callable, Optional
 
 def generate_sample(K: int) -> Dict:

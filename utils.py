@@ -1,6 +1,4 @@
 import numpy as np
-import pandas as pd
-
 
 
 def format_state(x, str_end=''):
@@ -96,6 +94,7 @@ def make_compact_policy(tree):
     return {'state': state, 'action': 'T' + act_test_str + 'L' + act_launch_str, 'children': children}
 
 
+# TODO why do the returned decision rules always have Index=None in the Action?
 def extract_decision_rules(policy):
     rule = ''.join(str(policy['state'])) + ':' + str(policy['action'])
     children = policy['children']
@@ -133,7 +132,7 @@ def make_policy_all_data(tree):
     # decision node
     if index is not None:
         # the node state is duplicated at decisions
-        node = children[node.Action['Index']]['value']
+        node = children[node.Action.Index]['value']
         action = node.Action
         # index = action['Index']
         if index is not None:
