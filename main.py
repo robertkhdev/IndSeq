@@ -1,4 +1,5 @@
 import experiments
+import tests
 
 
 if __name__ == '__main__':
@@ -15,3 +16,5 @@ if __name__ == '__main__':
     experiments.timing_test()
 
     # experiments.cache_test()
+
+    # experiments.timing_test_instance(K=2, n_samples=1)

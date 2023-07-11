@@ -1,4 +1,5 @@
 import numpy as np
+from indseqtree import *
 
 
 def format_state(x, str_end=''):
@@ -30,16 +31,15 @@ def to_tuple(a):
         return a
 
 
-
 def make_policy(tree):
-    node = tree['value']
-    children = tree['children']
-    action = node.Action
-    launched = node.Launched
-    tested = node.Tests
-    first_launch = node.First
-    index = tree['choice']
-    period = node.Period
+    state = tree.State
+    children = tree.Children
+    action = tree.Action
+    launched = state.Launched
+    tested = state.Tests
+    first_launch = state.First
+    index = tree.Choice
+    period = state.Period
 
     state = {'Tested': tested,
              'Launched': launched,
@@ -49,16 +49,16 @@ def make_policy(tree):
     # decision node
     if index is not None:
         # the node state is duplicated at decisions
-        node = children[index]['value']
+        node = children[index]
         action = node.Action
-        period = node.Period
+        period = node.State.Period
         # index = action['Index']
         state = {'Tested': tested,
                  'Launched': launched,
                  'FirstLaunch': first_launch,
                  'Period': period}
         if index is not None:
-            children = children[index]['children']
+            children = children[index].Children
             children = [make_policy(c) for c in children]
             return {'state': state, 'action': node.Action, 'children': children}
         else:
@@ -66,7 +66,7 @@ def make_policy(tree):
         return {'state': state, 'action': action, 'children': children}
 
     # end node
-    return {'state': state, 'action': node.Action, 'children': []}
+    return {'state': state, 'action': action, 'children': []}
 
 
 def compactify_state(state):
@@ -74,17 +74,17 @@ def compactify_state(state):
     return state_string.replace('None', '_')
 
 
-def make_compact_policy(tree):
-    children = tree['children']
-    index = tree['choice']
+def make_compact_policy(tree: Node):
+    children = tree.Children
+    index = tree.Choice
 
     # the node state is duplicated at decisions
-    node = children[index]['value']
-    children = children[index]['children']
-    tested = compactify_state(node.Tests)
-    launched = compactify_state(node.Launched)
-    first_launch = '_' if node.First is None else str(node.First)
-    state = 'P' + str(node.Period) + 'T' + tested + 'L' + launched + 'F' + first_launch
+    node = children[index]
+    children = children[index].Children
+    tested = compactify_state(node.State.Tests)
+    launched = compactify_state(node.State.Launched)
+    first_launch = '_' if node.State.First is None else str(node.State.First)
+    state = 'P' + str(node.State.Period) + 'T' + tested + 'L' + launched + 'F' + first_launch
 
     act_test = node.Action.Test
     act_test_str = '_' if act_test is None else str(act_test)

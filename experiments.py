@@ -27,7 +27,7 @@ def run_rand(K=3, n_samples=100, block_size=10_000, diagnostic=False, return_tre
 
         joint_probs = np.random.dirichlet(np.ones(2 ** K)).reshape(*([2] * K))
         test_costs = np.random.random(K) * 0.1  # varying this multipleir results in very different numbers of policies
-                                                # for the same number of samples taken.
+        # for the same number of samples taken.
         # test_costs = np.ones(K) * 0.1
         # ind_values = np.random.random(K)
         ind_values = np.append(np.array([1]), np.random.random(K - 1))
@@ -39,19 +39,17 @@ def run_rand(K=3, n_samples=100, block_size=10_000, diagnostic=False, return_tre
                   Period=t_per,
                   PeriodValue=0,
                   EV=0,
-                  JointProb=to_tuple(joint_probs),
-                  Action=Action(Test=None, Launch=None, Index=None),
-                  LaunchPer=launch_period,
-                  TestCost=tuple(test_costs),
-                  IndicationValues=tuple(ind_values),
-                  PricingMults=tuple(pricing_mults),
-                  DiscountRate=r)
+                  LaunchPer=launch_period)
 
         tree_tic = time.perf_counter()
-        tree = tree_start(x)
+        tree = tree_start(x, joint_prob=to_tuple(joint_probs),
+                          test_costs=tuple(test_costs),
+                          ind_values=tuple(ind_values),
+                          pricing_mults=tuple(pricing_mults),
+                          discount_factor=r)
         tree_toc = time.perf_counter()
         times.append(tree_toc - tree_tic)
-        values.append(tree['value'].EV)
+        values.append(tree.State.EV)
         samples.append(tree)
         if diagnostic:
             print(json.dumps(tree))
@@ -143,7 +141,7 @@ def timing_test():
     ns = [1_000, 10_000, 100_000, 1_000_000]
     for k in [2, 3]:
         for n in ns:
-            print('#'*100)
+            print('#' * 100)
             timing_test_instance(K=k, n_samples=n)
 
 
