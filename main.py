@@ -17,4 +17,4 @@ if __name__ == '__main__':
 
     # experiments.cache_test()
 
-    # experiments.timing_test_instance(K=2, n_samples=1)
+    # experiments.timing_test_instance(K=4, n_samples=100_000)

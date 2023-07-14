@@ -2,6 +2,7 @@ from collections import Counter
 from multiprocessing import Pool
 import json
 import pandas as pd
+import pickle
 import time
 
 import randmodels
@@ -9,8 +10,13 @@ from indseqtree import *
 from utils import *
 
 
-def run_rand(K=3, n_samples=100, block_size=10_000, diagnostic=False, return_tree=False):
-    np.random.seed(1234)
+def run_rand(K=3, n_samples=100, block_size=1_000, diagnostic=False, return_tree=False, processor_func=None):
+
+    # set up temporary file to save intermediate results
+    temp_file_name = 'run_rand_temp.csv'
+    with open(temp_file_name, mode='w') as f:
+        f.write('')
+
     r = 1 / (1 + 0.1)  # discount factor
 
     times = []
@@ -50,13 +56,19 @@ def run_rand(K=3, n_samples=100, block_size=10_000, diagnostic=False, return_tre
         tree_toc = time.perf_counter()
         times.append(tree_toc - tree_tic)
         values.append(tree.State.EV)
+        if processor_func is not None:
+            tree = processor_func(tree)
         samples.append(tree)
         if diagnostic:
             print(json.dumps(tree))
 
         step_count_monitor += 1
         if step_count_monitor % block_size == 0:
-            pass
+            print(step_count_monitor)
+            with open(temp_file_name, mode='ab+') as f:
+                pickle.dump(samples, f)
+            samples = []
+
         # if step_count_monitor == 10_000:
         #     toc = time.perf_counter()
         #     print('{0:0.0%}'.format(round(index / n_samples, 2)), round(toc - tic, 0), 'seconds')
@@ -67,11 +79,25 @@ def run_rand(K=3, n_samples=100, block_size=10_000, diagnostic=False, return_tre
     print('Avg. EV = ', np.mean(values))
     print('St. Dev. EV = ', np.std(values))
 
+    # dump any remaining samples
+    if len(samples) > 0:
+        with open(temp_file_name, mode='ab+') as f:
+            pickle.dump(samples, f)
+
+    # load all samples and return
+    samples = []
+    with open(temp_file_name, mode='rb') as f:
+        try:
+            while True:
+                samples_loaded = pickle.load(f)
+                samples = samples + samples_loaded
+        except EOFError:
+            pass
+
     if return_tree:
         return tree
     else:
         return samples
-
 
 def run_one(x):
     ...
@@ -110,14 +136,15 @@ def run_rand_parallel(K=3, n=1000):
 
 def timing_test_instance(K: int, n_samples: int):
     print('Running K =', str(K), ' n_samples =', n_samples)
+    np.random.seed(1234)
     tic = time.perf_counter()
     # K = 3
     # n_samples = 1_000
-    samples = run_rand(K, n_samples, diagnostic=False, return_tree=False)
-    compact_policies = [make_compact_policy(s) for s in samples]
-    policies = [make_policy(s) for s in samples]
+    samples = run_rand(K, n_samples, diagnostic=False, return_tree=False, processor_func=make_compact_policy)
+    # compact_policies = [make_compact_policy(s) for s in samples]
+    # policies = [make_policy(s) for s in samples]
     # policy_strs = [str(p) for p in policies]
-    rule_lists = [extract_decision_rules(p) for p in policies]
+    rule_lists = [extract_decision_rules(p) for p in samples]
     [r.sort(reverse=True, key=lambda x: x.count('_')) for r in rule_lists]
     rule_sets = [frozenset(r) for r in rule_lists]
 
@@ -138,8 +165,8 @@ def timing_test_instance(K: int, n_samples: int):
 
 def timing_test():
     ks = [2, 3, 4]
-    ns = [1_000, 10_000, 100_000, 1_000_000]
-    for k in [2, 3]:
+    ns = [1_000, 10_000, 100_000]
+    for k in ks:
         for n in ns:
             print('#' * 100)
             timing_test_instance(K=k, n_samples=n)
@@ -157,7 +184,6 @@ def cache_test():
         toc = time.perf_counter()
         print('total seconds ', toc - tic)
         recycle_cache(patent_window_mod)
-        recycle_cache(g)
         recycle_cache(actions)
         recycle_cache(success_prob)
         # recycle_cache(calc_marginal)

@@ -3,7 +3,7 @@ from typing import List, Optional
 import functools
 import dataclasses
 
-PATENT_WINDOW = 2000
+PATENT_WINDOW = 20
 CACHE_MAXSIZE = None
 
 
@@ -192,6 +192,9 @@ def tree_start(x: State, joint_prob, test_costs, ind_values, pricing_mults, disc
             if a.Test is not None:
                 child_node = vf_test(x, a)
             else:
+                successes = np.sum(np.array([z for z in x.Tests if z is not None]))
+                if successes > 0 and a.Test is None and a.Launch is None and x.First is None:
+                    continue
                 period_value = g(x, a)
                 new_x = f(x, a, [0]*n_inds)
                 new_x = dataclasses.replace(new_x, PeriodValue=period_value, EV=period_value)
