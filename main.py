@@ -13,8 +13,8 @@ if __name__ == '__main__':
     # policy = make_policy(tree)
     # print_policy(policy)
 
-    experiments.timing_test()
+    # experiments.timing_test()
 
     # experiments.cache_test()
 
-    # experiments.timing_test_instance(K=4, n_samples=100_000)
+    experiments.timing_test_instance(K=2, n_samples=10_000)

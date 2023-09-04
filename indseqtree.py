@@ -49,7 +49,7 @@ def patent_window_mod(t_per, launch_per, window_len, r):
 def actions(test_results, launched_first):
     # test_results = x.Tests
     # launched_first = x.First
-
+    end_at_launch = True
     no_tests = False
 
     # what can still be tested
@@ -70,7 +70,12 @@ def actions(test_results, launched_first):
     else:
         launches = [None]
 
-    action_list = [Action(Test=t, Launch=l, Index=None) for t in tests for l in launches]
+    if end_at_launch:
+        action_list = [Action(Test=t, Launch=None, Index=None) for t in tests]
+        action_list += [Action(Test=None, Launch=l, Index=None) for l in launches]
+    else:
+        action_list = [Action(Test=t, Launch=l, Index=None) for t in tests for l in launches]
+
     return action_list
 
 
