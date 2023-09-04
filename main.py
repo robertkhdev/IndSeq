@@ -6,7 +6,7 @@ if __name__ == '__main__':
     diagnostic = False
     # diagnostic = True
 
-    # tests.run_tests()
+    tests.run_tests()
 
     # diagnostic = True
     # tree = run_rand(3, diagnostic, return_tree=True)
@@ -17,4 +17,4 @@ if __name__ == '__main__':
 
     # experiments.cache_test()
 
-    experiments.timing_test_instance(K=2, n_samples=10_000)
+    # experiments.timing_test_instance(K=2, n_samples=10_000)

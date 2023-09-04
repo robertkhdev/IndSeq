@@ -3,7 +3,7 @@ from typing import List, Optional
 import functools
 import dataclasses
 
-PATENT_WINDOW = 20
+PATENT_WINDOW = 200
 CACHE_MAXSIZE = None
 
 
@@ -49,7 +49,7 @@ def patent_window_mod(t_per, launch_per, window_len, r):
 def actions(test_results, launched_first):
     # test_results = x.Tests
     # launched_first = x.First
-    end_at_launch = True
+    end_at_launch = False
     no_tests = False
 
     # what can still be tested
