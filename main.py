@@ -1,12 +1,13 @@
 import experiments
 import tests
+import unittest
 
 
 if __name__ == '__main__':
     diagnostic = False
     # diagnostic = True
 
-    tests.run_tests()
+    # tests.run_tests()
 
     # diagnostic = True
     # tree = run_rand(3, diagnostic, return_tree=True)
