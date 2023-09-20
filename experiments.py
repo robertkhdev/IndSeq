@@ -41,17 +41,15 @@ def run_rand(K=3, n_samples=100, block_size=1_000, diagnostic=False, return_tree
 
         x = State(Tests=test_results,
                   Launched=launched,
-                  First=launched_first,
                   Period=t_per,
                   PeriodValue=0,
-                  EV=0,
-                  LaunchPer=launch_period)
+                  EV=0)
 
         tree_tic = time.perf_counter()
         tree = tree_start(x, joint_prob=to_tuple(joint_probs),
                           test_costs=tuple(test_costs),
-                          ind_values=tuple(ind_values),
-                          pricing_mults=tuple(pricing_mults),
+                          ind_demands=tuple(ind_values),
+                          prices=tuple(pricing_mults),
                           discount_factor=r)
         tree_toc = time.perf_counter()
         times.append(tree_toc - tree_tic)
