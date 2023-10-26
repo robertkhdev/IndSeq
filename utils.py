@@ -83,8 +83,7 @@ def make_compact_policy(tree: Node):
     children = children[index].Children
     tested = compactify_state(node.State.Tests)
     launched = compactify_state(node.State.Launched)
-    first_launch = '_' if node.State.First is None else str(node.State.First)
-    state = 'P' + str(node.State.Period) + 'T' + tested + 'L' + launched + 'F' + first_launch
+    state = 'P' + str(node.State.Period) + 'T' + tested + 'L' + launched + 'F'
 
     act_test = node.Action.Test
     act_test_str = '_' if act_test is None else str(act_test)
