@@ -63,42 +63,101 @@ def run_tests(diagnostic=False):
     print('Total Time = ', total_toc - total_tic)
 
 
-class TestTreeK2(unittest.TestCase):
+def make_root_state(n_indications: int) -> State:
+    x = State(Tests=tuple([None] * n_indications),
+              Launched=tuple([None] * n_indications),
+              Period=0,
+              PeriodValue=0,
+              EV=0)
+    return x
+
+
+def make_uniform_problem(n_indications: int) -> dict:
+    K = n_indications
+    specs = {'joint_prob': to_tuple(np.ones(2 ** K).reshape(*([2] * K)) / (2 ** K)),
+             'test_costs': tuple(np.array([0.1] * K)),
+             'ind_demands': tuple(np.array([1] * K)),
+             'prices': tuple(np.array([1] * K)),
+             'discount_factor': 1 / (1 + 0.0),
+             'patent_window': 10}
+    return specs
+
+
+class TestTreeK1(unittest.TestCase):
     def test_simple_tree(self):
         # set up tree
-        K = 2
-        x = State(Tests=tuple([None] * K),
-                  Launched=tuple([None] * K),
-                  Period=0,
-                  PeriodValue=0,
-                  EV=0)
+        K = 1
+        x = make_root_state(K)
+        specs = make_uniform_problem(K)
+        specs['patent_window'] = 2
+        tree = tree_start(x, **specs)
 
-        joint_probs = np.ones(2 ** K).reshape(*([2] * K)) / (2 ** K)
-        tree = tree_start(x, joint_prob=to_tuple(joint_probs),
-                          test_costs=tuple(np.array([0.1] * K)),
-                          ind_demands=tuple(np.array([1] * K)),
-                          prices=tuple(np.array([1] * K)),
-                          discount_factor=1 / (1 + 0.0))
+        self.assertEqual(tree.State.EV, 0.4)
 
-        self.assertEquals(tree.State.EV, 1)
+    def test_no_demand(self):
+        # set up tree
+        K = 1
+        x = make_root_state(K)
+        specs = make_uniform_problem(K)
+        specs['ind_demands'] = (0,)
+        tree = tree_start(x, **specs)
 
-    def test_simple_tree2(self):
+        self.assertEqual(tree.State.EV, 0.0)
+
+    def test_10_periods(self):
+        # set up tree
+        K = 1
+        x = make_root_state(K)
+        specs = make_uniform_problem(K)
+        specs['patent_window'] = 10
+        tree = tree_start(x, **specs)
+
+        self.assertEqual(tree.State.EV, 4.4)
+
+
+class TestTreeK2(unittest.TestCase):
+
+    def tree_k2(self, x: State, joint_prob, test_costs, ind_demands, prices, discount_factor=1, patent_window=10):
+        # test A first
+        p_a = np.sum(joint_prob[1], axis=0)
+        # A Success
+        # A fails
+        AF_quit = 0
+        p_b_af = joint_prob[0, 1] / (1 - p_a)
+        #AF_test_B =
+
+        # test B first
+        p_b = p_a = np.sum(joint_prob[:,1], axis=1)
+
+    def test_2periods(self):
         # set up tree
         K = 2
-        x = State(Tests=(None,) * K,
-                  Launched=tuple([None] * K),
-                  Period=0,
-                  PeriodValue=0,
-                  EV=0)
+        x = make_root_state(K)
+        specs = make_uniform_problem(K)
+        specs['patent_window'] = 2
+        tree = tree_start(x, **specs)
 
-        joint_probs = np.ones(2 ** K).reshape(*([2] * K)) / (2 ** K)
-        tree = tree_start(x, joint_prob=to_tuple(joint_probs),
-                          test_costs=tuple(np.array([0.1]*K)),
-                          ind_demands=tuple(np.array([0]*K)),
-                          prices=tuple(np.array([1]*K)),
-                          discount_factor=1 / (1 + 0.0))
+        self.assertEqual(tree.State.EV, 1.0)
 
-        self.assertEquals(tree.State.EV, 0)
+    def test_10periods(self):
+        # set up tree
+        K = 2
+        x = make_root_state(K)
+        specs = make_uniform_problem(K)
+        specs['patent_window'] = 10
+        tree = tree_start(x, **specs)
+
+        self.assertEqual(tree.State.EV, 8.3)
+
+    def test_no_demand(self):
+        # set up tree
+        K = 2
+        x = make_root_state(K)
+        specs = make_uniform_problem(K)
+        specs['ind_demands'] = (0, 0)
+        tree = tree_start(x, **specs)
+
+        self.assertEqual(tree.State.EV, 0)
 
 
 if __name__ == '__main__':

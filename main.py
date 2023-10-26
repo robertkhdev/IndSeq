@@ -1,5 +1,5 @@
 import experiments
-import tests
+#import tests
 import unittest
 
 
@@ -8,6 +8,8 @@ if __name__ == '__main__':
     # diagnostic = True
 
     # tests.run_tests()
+
+    experiments.timing_test_instance(K=2, n_samples=100_000)
 
     # diagnostic = True
     # tree = run_rand(3, diagnostic, return_tree=True)

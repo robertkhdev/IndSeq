@@ -4,7 +4,6 @@ from typing import List, Optional
 import functools
 import dataclasses
 
-PATENT_WINDOW = 10
 CACHE_MAXSIZE = None
 
 
@@ -104,7 +103,7 @@ def calc_marginal(test_results, probs):
     return new_probs
 
 
-def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_factor) -> Node:
+def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_factor=1, patent_window=10) -> Node:
     """
     Entry point for tree algorithm.
     :param x:
@@ -134,7 +133,7 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
         K = len(x.Tests)
         payoff = 0
         launched = np.array([0 if i is None else i for i in x.Launched])
-        total_demand = launched * ind_demands
+        total_demand = launched * np.array(ind_demands)
         if sum(launched) > 0:
             price = np.min(np.array(prices)[launched > 0])
             # value from launched indications
@@ -187,7 +186,7 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
                 successes = np.sum(np.array([z for z in x.Tests if z is not None]))
                 period_value = g(x, a)
                 new_x = f(x, a, [0] * n_inds)
-                if x.Period < PATENT_WINDOW:
+                if x.Period < patent_window:
                     next_node = vf(new_x)
                     remaining_value = next_node.State.EV
                 else:
@@ -199,7 +198,7 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
             action_values.append(child_node.State.EV)
 
         if len(action_set) == 0:
-            periods_remaining = PATENT_WINDOW - x.Period
+            periods_remaining = patent_window - x.Period
             period_value = g(x, Action(Test=None, Launch=(None,), Index=None))
             disc = np.sum((1 + discount_factor) ** -np.array(range(periods_remaining)))
             remaining_value = np.sum(period_value * disc)
