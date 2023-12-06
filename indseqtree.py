@@ -1,5 +1,5 @@
 import numpy as np
-from itertools import combinations
+import itertools
 from typing import List, Optional
 import functools
 import dataclasses
@@ -30,7 +30,7 @@ class Action:
 @dataclasses.dataclass(frozen=True)
 class Node:
     State: State = None
-    Action: Action = None
+    Action: Optional[Action] = None
     Children: List = dataclasses.field(default_factory=list)
     Choice: int | None = None
 
@@ -46,36 +46,34 @@ def patent_window_mod(t_per, window_len, r):
 
 
 # action space
-@functools.lru_cache(maxsize=CACHE_MAXSIZE)
-def actions(test_results, launched, allow_testing=True):
-    end_at_launch = False
-    K = len(test_results)
+# @functools.lru_cache(maxsize=CACHE_MAXSIZE)
+def possible_actions(state: State) -> List[Action]:
+    """
+    Generate a list of all possible actions that can be taken from a given state,
+    including testing, launching, both, or neither.
 
-    # what can still be tested
-    tests: List[Optional[int]] = []
-    if allow_testing:
-        tests = [i for i, v in enumerate(test_results) if v is None]
-    tests.append(None)
+    Parameters:
+    state (State): The current state of the decision process.
 
-    # what can be launched
-    can_launch = np.array([x if x is not None else 0 for x in test_results])
-    launched_01 = np.array([1 if x is not None else 0 for x in launched])
-    unlaunched = (can_launch - launched_01) * np.arange(1, K + 1)
-    unlaunched_index = [x - 1 for x in unlaunched if x > 0]
+    Returns:
+    List[Action]: A list of possible actions.
+    """
+    actions = []
+    num_indications = len(state.Tests)
 
-    launches = []
-    if len(unlaunched_index) > 0:
-        combos = [list(combinations(unlaunched_index, i+1)) for i in range(K)]
-        launches = [item for combolist in combos for item in combolist]
-    launches += [None]
+    # Possible tests (including the option of not testing anything)
+    possible_tests = [i for i in range(num_indications) if state.Tests[i] is None] + [None]
 
-    if end_at_launch:
-        action_list = [Action(Test=t, Launch=None) for t in tests]
-        action_list += [Action(Test=None, Launch=l) for l in launches]
-    else:
-        action_list = [Action(Test=t, Launch=l) for t in tests for l in launches]
+    # Possible launches (including the option of not launching anything)
+    launchable = [i for i, test_result in enumerate(state.Tests) if test_result == 1 and (state.Launched is None or state.Launched[i] is None)]
+    possible_launches = [None] + [tuple(comb) for r in range(1, len(launchable) + 1) for comb in itertools.combinations(launchable, r)]
 
-    return action_list
+    # Generate all combinations of tests and launches
+    for test in possible_tests:
+        for launch in possible_launches:
+            actions.append(Action(Test=test, Launch=launch))
+
+    return actions
 
 
 @functools.lru_cache(maxsize=CACHE_MAXSIZE)
@@ -131,9 +129,6 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
         # K = len(x.Tests)
         payoff = 0
         launched = np.array([0 if i is None else i for i in x.Launched])
-        # if a.Launch is not None:
-        #     for i in a.Launch:
-        #         launched[i] = 1
         total_demand = launched * np.array(ind_demands)
         if sum(launched) > 0:
             price = np.min(np.array(prices)[launched > 0])
@@ -146,140 +141,102 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
 
         return payoff
 
-    # @functools.lru_cache(maxsize=CACHE_MAXSIZE)
-    def vf_test(x: State, a) -> Node:
-        k = a.Test
-        success = [0] * n_inds
-        success[k] = 1
-        failure = [0] * n_inds
-        failure[k] = 0
+    def vf_combined(x: State) -> Node:
+        # Determine possible actions from the current state
+        action_set = possible_actions(x)
 
-        value_in_period = g(x, a)
-        # value_in_period = 0
+        # If no actions are possible, return the current state as a terminal node
+        if not action_set:
+            return Node(State=x)
 
-        x_s = f(x, a, success)
-        x_f = f(x, a, failure)
-        ps = success_prob(x_s.Tests, joint_prob, x_f.Tests, joint_prob)
-
-        success_node = vf(x_s)
-        success_value = success_node.State.EV
-
-        failure_node = vf(x_f)
-        failure_value = failure_node.State.EV
-
-        value = value_in_period + discount_factor * (ps * success_value + (1 - ps) * failure_value)
-        # value = ps * success_value + (1 - ps) * failure_value
-        new_x = dataclasses.replace(x, PeriodValue=value_in_period, EV=value)
-        node = Node(State=new_x, Children=[success_node, failure_node], Action=a)
-        return node
-
-    def vf_end(x: State, a: Action) -> Node:
-        # action_set = actions(x.Tests, x.Launched, allow_testing=False)
-        # action_values = []
-        # action_list = []
-
-        new_x = f(x, a, [0] * n_inds)
-        period_value = g(new_x, a)
-
-        if x.Period >= patent_window:
-            # no more testing or launching and no more periods left
-            remaining_value = 0
-        else:
-            # no more testing, but at least one period left
-            remaining_value = period_value * patent_window_mod(x.Period, patent_window, discount_factor)
-
-        value = period_value + discount_factor * remaining_value
-        new_x = dataclasses.replace(new_x, PeriodValue=period_value, EV=value)
-        child_node = Node(State=new_x, Action=a)
-
-        # for a in action_set:
-        #     period_value = g(x, a)
-        #     value = period_value
-        #     remaining_value = period_value * patent_window_mod(x.Period, patent_window, discount_factor)
-        #     value += discount_factor * remaining_value
-        #     new_x = dataclasses.replace(x, PeriodValue=period_value, EV=value)
-        #     child_node = Node(State=new_x, Action=a)
-        #     action_list.append(child_node)
-        #     action_values.append(child_node.State.EV)
-        #
-        # best_value = 0
-        # choice = None
-        # if len(action_values) > 0:
-        #     best_value = max(action_values)
-        #     choice = action_values.index(best_value)
-        #
-        # new_x = dataclasses.replace(x, EV=best_value)
-        # node_action = None
-        # if choice is not None:
-        #     node_action = action_list[choice].Action
-        #
-        # node = Node(State=new_x,
-        #             Action=node_action,
-        #             Children=action_list,
-        #             Choice=choice)
-
-        return child_node
-
-
-    # value function
-    # @functools.lru_cache(maxsize=CACHE_MAXSIZE)
-    def vf(x: State, tree_start=False) -> Node:
-        action_set = actions(x.Tests, x.Launched, x.IsTesting)
+        # List to store child nodes and their corresponding EVs
         action_values = []
         action_list = []
 
-        # if not the first period but nothing has been tested, then the action_set = {} and quit
-        if x.Period > 0 and all(t is None for t in x.Tests):
-            action_set = []
-
         for a in action_set:
+            new_x = f(x, a, None)  # Update the state for any launches
+            value_in_period = g(new_x, a)  # Calculate the immediate payoff of the action
+
+            # Determine the expected value based on the action type
             if a.Test is not None:
-                child_node = vf_test(x, a)
+                # Handle test actions
+                k = a.Test
+                success = [0] * n_inds
+                success[k] = 1
+                failure = [0] * n_inds
+                failure[k] = 0
+
+                x_s = f(x, a, success)
+                x_f = f(x, a, failure)
+                success_node = vf_combined(x_s)
+                failure_node = vf_combined(x_f)
+                success_value = success_node.State.EV  # Recursive call
+                failure_value = failure_node.State.EV  # Recursive call
+
+                ps = success_prob(x_s.Tests, joint_prob, x_f.Tests, joint_prob)
+                value = value_in_period + discount_factor * (ps * success_value + (1 - ps) * failure_value)
+                new_x = dataclasses.replace(new_x, PeriodValue=value_in_period, EV=value)
+                child_node = Node(State=new_x, Children=[success_node, failure_node], Action=a)
             else:
-                # Once you stop testing, you can't start again.
-                child_node = vf_end(x, a)
+                # Handle end actions or no action
+                remaining_value = value_in_period * patent_window_mod(x.Period, patent_window, discount_factor)
+                value = value_in_period + discount_factor * remaining_value
+                new_x = dataclasses.replace(new_x, PeriodValue=value_in_period, EV=value)
+                child_node = Node(State=new_x, Action=a)
 
+            # add to the action list
             action_list.append(child_node)
-            action_values.append(child_node.State.EV)
+            action_values.append(value)
 
-        best_value = 0
-        choice = None
-        if len(action_values) > 0:
-            best_value = max(action_values)
-            choice = action_values.index(best_value)
-
+        # Choose the action with the highest EV
+        best_value, choice = max((value, idx) for idx, value in enumerate(action_values))
         new_x = dataclasses.replace(x, EV=best_value)
-
-        node = Node(State=new_x, Action=None, Children=action_list, Choice=choice)
-
-        return node
+        return Node(State=new_x, Children=action_list, Choice=choice)
 
     # state update
     def f(x: State, a, u) -> State:
         """
-        x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None, time period)
-        a: action = tuple (test index or None to stop, launch index or None)
-        u: test outcome = 1 for success, 0 for failure
+        Function to update the state based on the action taken and the test outcome.
+
+        Parameters:
+        x (State): The current state, including test results, launched indications, and the current time period.
+        a (Action): The action to be taken, including the indication to test and to launch.
+        u (Test Outcome): Outcome of the test, 1 for success, 0 for failure.
+
+        Returns:
+        State: The new updated state.
         """
+
+        # Extract current test results and launched indications from the state
         test_results = x.Tests
         launched = x.Launched
         t_per = x.Period
         test = a.Test
+
+        # If there's an action to launch indications
         if a.Launch is not None:
-            successes = np.array([tr if tr is not None else 0 for tr in test_results])
-            launched_prev = np.array([launch if launch is not None else 0 for launch in launched])
-            launched_01 = np.array([1 if launch is not None else 0 for launch in launched])
-            can_launch = successes - launched_01
-            launched_now = can_launch
-            launched = launched_prev + launched_now
+            launching = np.array([1 if i in a.Launch else 0 for i in range(n_inds)])
+
+            # Convert current launch status to binary (launched or not)
+            launched_prev = np.array([launch if launch is not None else 0 for launch in x.Launched])
+
+            # Update the launched status based on current action
+            launched = launched_prev + launching
+
+            # Convert back to the original format (None for not launched)
             launched = tuple([launch if launch != 0 else None for launch in launched])
 
-        if test is not None:
+        # If there's an action to test an indication
+        if test is not None and u is not None:
+            # Update the test results with the new outcome
             test_results = list(test_results)
             test_results[test] = u[test]
             test_results = tuple(test_results)
+
+            # Increment the time period as a test consumes a time unit
             t_per += 1
 
+        # Create a new state with updated values
         new_x = dataclasses.replace(x,
                                     Tests=test_results,
                                     Launched=launched,
@@ -287,4 +244,4 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
 
         return new_x
 
-    return vf(x, tree_start=True)
+    return vf_combined(x)
