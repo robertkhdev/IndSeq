@@ -9,12 +9,12 @@ if __name__ == '__main__':
 
     # tests.run_tests()
 
-    experiments.timing_test_instance(K=2, n_samples=100_000)
+    # experiments.timing_test_instance(K=2, n_samples=10)
 
-    # diagnostic = True
-    # tree = run_rand(3, diagnostic, return_tree=True)
-    # policy = make_policy(tree)
-    # print_policy(policy)
+    diagnostic = True
+    tree = experiments.run_rand(2, diagnostic, return_tree=True)
+    policy = experiments.make_policy(tree)
+    experiments.print_policy(policy)
 
     # experiments.timing_test()
 

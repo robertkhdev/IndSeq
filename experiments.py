@@ -50,7 +50,8 @@ def run_rand(K=3, n_samples=100, block_size=1_000, diagnostic=False, return_tree
                           test_costs=tuple(test_costs),
                           ind_demands=tuple(ind_values),
                           prices=tuple(pricing_mults),
-                          discount_factor=r)
+                          discount_factor=r,
+                          patent_window=5)
         tree_toc = time.perf_counter()
         times.append(tree_toc - tree_tic)
         values.append(tree.State.EV)

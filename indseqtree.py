@@ -16,13 +16,15 @@ class State:
     Period: Optional[int] = None
     PeriodValue: Optional[float] = None
     EV: Optional[float] = None
+    IsTesting: bool = True
+    IsLaunching: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
 class Action:
     Test: int | None = None
     Launch: tuple[int | None] = None
-    Index: int | None = None
+    # Index: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -34,29 +36,25 @@ class Node:
 
 
 @functools.lru_cache(maxsize=CACHE_MAXSIZE)
-def patent_window_mod(t_per, launch_per, window_len, r):
-    time_left = max(0, launch_per + window_len - t_per)
+def patent_window_mod(t_per, window_len, r):
+    time_left = window_len - t_per - 1
     if time_left > 0:
-        full_value = np.sum((1 + r) ** -np.array(range(window_len)))
-        partial_value = np.sum((1 + r) ** -np.array(range(time_left)))
-        return partial_value / full_value
+        npv_mult = np.sum(r ** (np.array(range(time_left))))
+        return npv_mult
     else:
         return 0
 
 
 # action space
 @functools.lru_cache(maxsize=CACHE_MAXSIZE)
-def actions(test_results, launched):
-    # test_results = x.Tests
-    # launched_first = x.First
+def actions(test_results, launched, allow_testing=True):
     end_at_launch = False
-    no_tests = False
     K = len(test_results)
 
     # what can still be tested
-    tests: List[Optional[int]] = [i for i, v in enumerate(test_results) if v is None]
-    if len(tests) == 0:
-        no_tests = True
+    tests: List[Optional[int]] = []
+    if allow_testing:
+        tests = [i for i, v in enumerate(test_results) if v is None]
     tests.append(None)
 
     # what can be launched
@@ -72,10 +70,10 @@ def actions(test_results, launched):
     launches += [None]
 
     if end_at_launch:
-        action_list = [Action(Test=t, Launch=None, Index=None) for t in tests]
-        action_list += [Action(Test=None, Launch=l, Index=None) for l in launches]
+        action_list = [Action(Test=t, Launch=None) for t in tests]
+        action_list += [Action(Test=None, Launch=l) for l in launches]
     else:
-        action_list = [Action(Test=t, Launch=l, Index=None) for t in tests for l in launches]
+        action_list = [Action(Test=t, Launch=l) for t in tests for l in launches]
 
     return action_list
 
@@ -122,7 +120,7 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
     n_inds = len(ind_demands)
 
     # payoff function
-    @functools.lru_cache(maxsize=CACHE_MAXSIZE)
+    #@functools.lru_cache(maxsize=CACHE_MAXSIZE)
     def g(x: State, a) -> float:
         """
         x: state = ([test results 1=success, 0=fail, None=not tested], [indications launched 1=launch 0=not], first launched index or None)
@@ -130,9 +128,12 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
         test_cost: test cost data
         """
 
-        K = len(x.Tests)
+        # K = len(x.Tests)
         payoff = 0
         launched = np.array([0 if i is None else i for i in x.Launched])
+        # if a.Launch is not None:
+        #     for i in a.Launch:
+        #         launched[i] = 1
         total_demand = launched * np.array(ind_demands)
         if sum(launched) > 0:
             price = np.min(np.array(prices)[launched > 0])
@@ -172,36 +173,74 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
         node = Node(State=new_x, Children=[success_node, failure_node], Action=a)
         return node
 
+    def vf_end(x: State, a: Action) -> Node:
+        # action_set = actions(x.Tests, x.Launched, allow_testing=False)
+        # action_values = []
+        # action_list = []
+
+        new_x = f(x, a, [0] * n_inds)
+        period_value = g(new_x, a)
+
+        if x.Period >= patent_window:
+            # no more testing or launching and no more periods left
+            remaining_value = 0
+        else:
+            # no more testing, but at least one period left
+            remaining_value = period_value * patent_window_mod(x.Period, patent_window, discount_factor)
+
+        value = period_value + discount_factor * remaining_value
+        new_x = dataclasses.replace(new_x, PeriodValue=period_value, EV=value)
+        child_node = Node(State=new_x, Action=a)
+
+        # for a in action_set:
+        #     period_value = g(x, a)
+        #     value = period_value
+        #     remaining_value = period_value * patent_window_mod(x.Period, patent_window, discount_factor)
+        #     value += discount_factor * remaining_value
+        #     new_x = dataclasses.replace(x, PeriodValue=period_value, EV=value)
+        #     child_node = Node(State=new_x, Action=a)
+        #     action_list.append(child_node)
+        #     action_values.append(child_node.State.EV)
+        #
+        # best_value = 0
+        # choice = None
+        # if len(action_values) > 0:
+        #     best_value = max(action_values)
+        #     choice = action_values.index(best_value)
+        #
+        # new_x = dataclasses.replace(x, EV=best_value)
+        # node_action = None
+        # if choice is not None:
+        #     node_action = action_list[choice].Action
+        #
+        # node = Node(State=new_x,
+        #             Action=node_action,
+        #             Children=action_list,
+        #             Choice=choice)
+
+        return child_node
+
+
     # value function
     # @functools.lru_cache(maxsize=CACHE_MAXSIZE)
-    def vf(x: State) -> Node:
-        action_set = actions(x.Tests, x.Launched)
+    def vf(x: State, tree_start=False) -> Node:
+        action_set = actions(x.Tests, x.Launched, x.IsTesting)
         action_values = []
         action_list = []
+
+        # if not the first period but nothing has been tested, then the action_set = {} and quit
+        if x.Period > 0 and all(t is None for t in x.Tests):
+            action_set = []
 
         for a in action_set:
             if a.Test is not None:
                 child_node = vf_test(x, a)
             else:
-                successes = np.sum(np.array([z for z in x.Tests if z is not None]))
-                period_value = g(x, a)
-                new_x = f(x, a, [0] * n_inds)
-                if x.Period < patent_window:
-                    next_node = vf(new_x)
-                    remaining_value = next_node.State.EV
-                else:
-                    remaining_value = 0
-                value = period_value + discount_factor * remaining_value
-                new_x = dataclasses.replace(new_x, PeriodValue=period_value, EV=value)
-                child_node = Node(State=new_x, Action=a)
+                # Once you stop testing, you can't start again.
+                child_node = vf_end(x, a)
+
             action_list.append(child_node)
             action_values.append(child_node.State.EV)
-
-        if len(action_set) == 0:
-            periods_remaining = patent_window - x.Period
-            period_value = g(x, Action(Test=None, Launch=(None,), Index=None))
-            disc = np.sum((1 + discount_factor) ** -np.array(range(periods_remaining)))
-            remaining_value = np.sum(period_value * disc)
 
         best_value = 0
         choice = None
@@ -210,14 +249,8 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
             choice = action_values.index(best_value)
 
         new_x = dataclasses.replace(x, EV=best_value)
-        node_action = None
-        if choice is not None:
-            node_action = action_list[choice].Action
 
-        node = Node(State=new_x,
-                    Action=node_action,
-                    Children=action_list,
-                    Choice=choice)
+        node = Node(State=new_x, Action=None, Children=action_list, Choice=choice)
 
         return node
 
@@ -245,8 +278,7 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
             test_results = list(test_results)
             test_results[test] = u[test]
             test_results = tuple(test_results)
-
-        t_per += 1
+            t_per += 1
 
         new_x = dataclasses.replace(x,
                                     Tests=test_results,
@@ -255,4 +287,4 @@ def tree_start(x: State, joint_prob, test_costs, ind_demands, prices, discount_f
 
         return new_x
 
-    return vf(x)
+    return vf(x, tree_start=True)

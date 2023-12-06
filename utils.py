@@ -37,13 +37,13 @@ def make_policy(tree):
     action = tree.Action
     launched = state.Launched
     tested = state.Tests
-    first_launch = state.First
+#    first_launch = state.First
     index = tree.Choice
     period = state.Period
 
     state = {'Tested': tested,
              'Launched': launched,
-             'FirstLaunch': first_launch,
+             # 'FirstLaunch': first_launch,
              'Period': period}
 
     # decision node
@@ -55,7 +55,7 @@ def make_policy(tree):
         # index = action['Index']
         state = {'Tested': tested,
                  'Launched': launched,
-                 'FirstLaunch': first_launch,
+                 # 'FirstLaunch': first_launch,
                  'Period': period}
         if index is not None:
             children = children[index].Children
@@ -152,9 +152,9 @@ def print_policy(policy):
     """
     node = policy
     action = node['action']
-    if action is not None and len(action) > 0:
-        test = action['Test']
-        launch = action['Launch']
+    if action is not None:
+        test = action.Test
+        launch = action.Launch
         action_str = ''
         if test is not None:
             action_str += 'Test ' + str(test) + ' '

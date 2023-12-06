@@ -117,17 +117,21 @@ class TestTreeK1(unittest.TestCase):
 
 class TestTreeK2(unittest.TestCase):
 
-    def tree_k2(self, x: State, joint_prob, test_costs, ind_demands, prices, discount_factor=1, patent_window=10):
-        # test A first
-        p_a = np.sum(joint_prob[1], axis=0)
-        # A Success
-        # A fails
-        AF_quit = 0
-        p_b_af = joint_prob[0, 1] / (1 - p_a)
-        #AF_test_B =
-
-        # test B first
-        p_b = p_a = np.sum(joint_prob[:,1], axis=1)
+    def test_tree_k2(self):
+        x = make_root_state(2)
+        joint_prob = np.array([[0.45, 0.25], [0.05, 0.25]])
+        test_costs = np.array([0.1, 0.1])
+        ind_demands = np.array([1, 1])
+        prices = np.array([1, 0.5])
+        discount_factor = 1 / (1 + 0.1)
+        patent_window = 3
+        tree = tree_start(x, joint_prob=to_tuple(joint_prob),
+                          test_costs=tuple(test_costs),
+                          ind_demands=tuple(ind_demands),
+                          prices=tuple(prices),
+                          discount_factor=discount_factor,
+                          patent_window=patent_window)
+        self.assertEqual(round(tree.State.EV - 0.460330578512397, 6), 0.0)
 
     def test_2periods(self):
         # set up tree
