@@ -1,9 +1,10 @@
+# tests set up to use pytest
+
 import unittest
 import pandas as pd
 import time
-
-
 from utils import *
+import pytest
 
 
 def run_tests(diagnostic=False):
@@ -84,190 +85,175 @@ def make_uniform_problem(n_indications: int) -> dict:
     return specs
 
 
-class TestTreeK1(unittest.TestCase):
-    def test_simple_tree(self):
-        # set up tree
-        K = 1
-        x = make_root_state(K)
-        specs = make_uniform_problem(K)
-        specs['patent_window'] = 2
-        tree = tree_start(x, **specs)
+def test_simple_tree():
+    K = 1
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 2
+    tree = tree_start(x, **specs)
 
-        self.assertEqual(tree.State.EV, 0.4)
-
-    def test_no_demand(self):
-        # set up tree
-        K = 1
-        x = make_root_state(K)
-        specs = make_uniform_problem(K)
-        specs['ind_demands'] = (0,)
-        tree = tree_start(x, **specs)
-
-        self.assertEqual(tree.State.EV, 0.0)
-
-    def test_10_periods(self):
-        # set up tree
-        K = 1
-        x = make_root_state(K)
-        specs = make_uniform_problem(K)
-        specs['patent_window'] = 10
-        tree = tree_start(x, **specs)
-
-        self.assertEqual(tree.State.EV, 4.4)
+    assert tree.State.EV == 0.4
 
 
-class TestTreeK2_example1(unittest.TestCase):
-    # parameters for example 1
+def test_no_demand():
+    K = 1
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['ind_demands'] = (0,)
+    tree = tree_start(x, **specs)
+
+    assert tree.State.EV == 0.0
+
+
+def test_10_periods():
+    K = 1
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 10
+    tree = tree_start(x, **specs)
+
+    assert tree.State.EV == 4.4
+
+
+# parameters for example 1
+K = 2
+joint_prob = np.array([[0.25, 0.45], [0.25, 0.05]])
+test_costs = np.array([0.1, 0.1])
+ind_demands = np.array([1, 1])
+prices = np.array([1, 0.5])
+discount_factor = 1 / (1 + 0.1)
+patent_window = 3
+
+@pytest.fixture
+def default_specs():
+    return {'joint_prob': to_tuple(joint_prob),
+            'test_costs': tuple(test_costs),
+            'ind_demands': tuple(ind_demands),
+            'prices': tuple(prices),
+            'discount_factor': discount_factor,
+            'patent_window': patent_window,
+            'allow_simult_tests': False}
+
+@pytest.fixture
+def root_state():
+    return make_root_state(K)
+
+def test_0(default_specs, root_state):
+    specs = default_specs
+    tree = tree_start(root_state, **specs)
+    assert round(tree.State.EV - 0.542975207, 6) == 0.0
+
+def test_1(default_specs, root_state):
+    specs = default_specs
+    specs['discount_factor'] = 1 / (1 + 0.0)
+    tree = tree_start(root_state, **specs)
+    assert round(tree.State.EV - 0.655, 6) == 0.0
+
+def test_2(default_specs, root_state):
+    specs = default_specs
+    specs['patent_window'] = 2
+    tree = tree_start(root_state, **specs)
+    assert round(tree.State.EV - 0.172727273, 6) == 0.0
+
+def test_3(default_specs, root_state):
+    specs = default_specs
+    specs['patent_window'] = 2
+    specs['allow_simult_tests'] = True
+    tree = tree_start(root_state, **specs)
+    assert round(tree.State.EV - 0.277272727, 6) == 0.0
+
+def test_4(default_specs, root_state):
+    specs = default_specs
+    specs['allow_simult_tests'] = True
+    tree = tree_start(root_state, **specs)
+    assert round(tree.State.EV - 0.711157025, 6) == 0.0
+
+def test_5(default_specs, root_state):
+    specs = default_specs
+    specs['discount_factor'] = 1 / (1 + 0.0)
+    specs['allow_simult_tests'] = True
+    tree = tree_start(root_state, **specs)
+    assert round(tree.State.EV - 0.85, 6) == 0.0
+
+def test_6(default_specs, root_state):
+    specs = default_specs
+    specs['discount_factor'] = 1 / (1 + 0.0)
+    specs['allow_simult_tests'] = True
+    specs['patent_window'] = 2
+    tree = tree_start(root_state, **specs)
+    assert round(tree.State.EV - 0.325, 6) == 0.0
+
+
+def test_2periods():
     K = 2
-    joint_prob = np.array([[0.25, 0.45], [0.25, 0.05]])
-    test_costs = np.array([0.1, 0.1])
-    ind_demands = np.array([1, 1])
-    prices = np.array([1, 0.5])
-    discount_factor = 1 / (1 + 0.1)
-    patent_window = 3
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 2
+    tree = tree_start(x, **specs)
 
-    # testing dimensions
-    # - patent_window
-    # - discount_factor
-    # - allow_simult_tests
-    # - price mechanism?
+    assert round(tree.State.EV - 0.4, 6) == 0.0
 
-    def get_default_specs(self):
-        return {'joint_prob': to_tuple(self.joint_prob),
-                'test_costs': tuple(self.test_costs),
-                'ind_demands': tuple(self.ind_demands),
-                'prices': tuple(self.prices),
-                'discount_factor': self.discount_factor,
-                'patent_window': self.patent_window,
-                'allow_simult_tests': False}
-
-
-    def test_0(self):
-        x = make_root_state(self.K)
-        specs = self.get_default_specs()
-        tree = tree_start(x, **specs)
-        self.assertEqual(round(tree.State.EV - 0.542975207, 6), 0.0)
-
-    def test_1(self):
-        x = make_root_state(self.K)
-        specs = self.get_default_specs()
-        specs['discount_factor'] = 1 / (1 + 0.0)
-        tree = tree_start(x, **specs)
-        self.assertEqual(round(tree.State.EV - 0.655, 6), 0.0)
-
-    def test_2(self):
-        x = make_root_state(self.K)
-        specs = self.get_default_specs()
-        specs['patent_window'] = 2
-        tree = tree_start(x, **specs)
-        self.assertEqual(round(tree.State.EV - 0.172727273, 6), 0.0)
-
-    def test_3(self):
-        x = make_root_state(self.K)
-        specs = self.get_default_specs()
-        specs['patent_window'] = 2
-        specs['allow_simult_tests'] = True
-        tree = tree_start(x, **specs)
-        self.assertEqual(round(tree.State.EV - 0.277272727, 6), 0.0)
-
-    def test_4(self):
-        x = make_root_state(self.K)
-        specs = self.get_default_specs()
-        specs['allow_simult_tests'] = True
-        tree = tree_start(x, **specs)
-        self.assertEqual(round(tree.State.EV - 0.711157025, 6), 0.0)
-
-    def test_5(self):
-        x = make_root_state(self.K)
-        specs = self.get_default_specs()
-        specs['discount_factor'] = 1 / (1 + 0.0)
-        specs['allow_simult_tests'] = True
-        tree = tree_start(x, **specs)
-        self.assertEqual(round(tree.State.EV - 0.85, 6), 0.0)
-
-    def test_6(self):
-        x = make_root_state(self.K)
-        specs = self.get_default_specs()
-        specs['discount_factor'] = 1 / (1 + 0.0)
-        specs['allow_simult_tests'] = True
-        specs['patent_window'] = 2
-        tree = tree_start(x, **specs)
-        self.assertEqual(round(tree.State.EV - 0.325, 6), 0.0)
-
-
-
-class TestTreeK2(unittest.TestCase):
+def test_3periods():
     K = 2
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 3
+    tree = tree_start(x, **specs)
 
-    def test_2periods(self):
-        # set up tree
-        x = make_root_state(self.K)
-        specs = make_uniform_problem(self.K)
-        specs['patent_window'] = 2
-        tree = tree_start(x, **specs)
+    assert round(tree.State.EV - 1.3, 6) == 0.0
 
-        self.assertEqual(round(tree.State.EV - 0.4, 6), 0.0)
+def test_2periods2():
+    K = 2
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 2
+    specs['joint_prob'] = to_tuple(np.array([[0.5625, 0.1875], [0.1875, 0.0625]]))
+    tree = tree_start(x, **specs)
 
-    def test_3periods(self):
-        # set up tree
-        x = make_root_state(self.K)
-        specs = make_uniform_problem(self.K)
-        specs['patent_window'] = 3
-        tree = tree_start(x, **specs)
+    assert round(tree.State.EV - 0.15, 3) == 0.0
 
-        self.assertEqual(round(tree.State.EV - 1.3, 6), 0.0)
+def test_2periods2parallel():
+    K = 2
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 2
+    specs['joint_prob'] = to_tuple(np.array([[0.5625, 0.1875], [0.1875, 0.0625]]))
+    specs['allow_simult_tests'] = True
+    specs['discount_factor'] = 1 / (1 + 0.0)
+    tree = tree_start(x, **specs)
 
-    def test_2periods2(self):
-        # set up tree
-        x = make_root_state(self.K)
-        specs = make_uniform_problem(self.K)
-        specs['patent_window'] = 2
-        specs['joint_prob'] = to_tuple(np.array([[0.5625, 0.1875], [0.1875, 0.0625]]))
-        tree = tree_start(x, **specs)
+    assert round(tree.State.EV - 0.30, 3) == 0.0
 
-        self.assertEqual(round(tree.State.EV - 0.15, 3), 0.0)
+def test_2periods3parallel():
+    K = 2
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 3
+    specs['joint_prob'] = to_tuple(np.array([[0.5625, 0.1875], [0.1875, 0.0625]]))
+    specs['allow_simult_tests'] = True
+    specs['discount_factor'] = 1 / (1 + 0.0)
+    tree = tree_start(x, **specs)
 
-    def test_2periods2parallel(self):
-        # set up tree
-        x = make_root_state(self.K)
-        specs = make_uniform_problem(self.K)
-        specs['patent_window'] = 2
-        specs['joint_prob'] = to_tuple(np.array([[0.5625, 0.1875], [0.1875, 0.0625]]))
-        specs['allow_simult_tests'] = True
-        specs['discount_factor'] = 1 / (1 + 0.0)
-        tree = tree_start(x, **specs)
+    assert round(tree.State.EV - 0.80, 3) == 0.0
 
-        self.assertEqual(round(tree.State.EV - 0.30, 3), 0.0)
+def test_10periods():
+    K = 2
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['patent_window'] = 10
+    tree = tree_start(x, **specs)
 
-    def test_2periods3parallel(self):
-        # set up tree
-        x = make_root_state(self.K)
-        specs = make_uniform_problem(self.K)
-        specs['patent_window'] = 3
-        specs['joint_prob'] = to_tuple(np.array([[0.5625, 0.1875], [0.1875, 0.0625]]))
-        specs['allow_simult_tests'] = True
-        specs['discount_factor'] = 1 / (1 + 0.0)
-        tree = tree_start(x, **specs)
+    assert tree.State.EV == 8.3
 
-        self.assertEqual(round(tree.State.EV - 0.80, 3), 0.0)
 
-    def test_10periods(self):
-        # set up tree
-        x = make_root_state(self.K)
-        specs = make_uniform_problem(self.K)
-        specs['patent_window'] = 10
-        tree = tree_start(x, **specs)
+def test_no_demand_k2():
+    K = 2
+    x = make_root_state(K)
+    specs = make_uniform_problem(K)
+    specs['ind_demands'] = (0, 0)
+    tree = tree_start(x, **specs)
 
-        self.assertEqual(tree.State.EV, 8.3)
-
-    def test_no_demand(self):
-        # set up tree
-        x = make_root_state(self.K)
-        specs = make_uniform_problem(self.K)
-        specs['ind_demands'] = (0, 0)
-        tree = tree_start(x, **specs)
-
-        self.assertEqual(tree.State.EV, 0)
+    assert tree.State.EV == 0
 
 
 # @unittest.skip("work in progress")
